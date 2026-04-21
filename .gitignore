@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+venv/
+.venv/
+
+# Logs
+logs/
+*.log
+
+# Generated reconstruction data
+data/database.db
+data/images/
+data/sparse/
+data/dense/
+
+# Input videos and local test media
+data/input_video/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.m4v
+
+# Built viewer artifacts
+viewer/viewer.exe
+viewer/raylib.dll
+viewer.exe
+
+# Downloaded archives and local SDK bundles
+*.zip
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
