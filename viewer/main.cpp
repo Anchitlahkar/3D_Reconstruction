@@ -29,6 +29,7 @@ struct PointCloudInfo {
     bool hasColor = false;
     Vector3 originalCenter = {0.0f, 0.0f, 0.0f};
     float normalizationScale = 1.0f;
+    bool flippedVertically = false;
 };
 
 static bool FileExists(const std::string& path) {
@@ -259,13 +260,26 @@ static void NormalizePointCloud(std::vector<Point>& points, PointCloudInfo& info
     const float sizeY = maxPoint.y - minPoint.y;
     const float sizeZ = maxPoint.z - minPoint.z;
     const float largestSize = std::max(sizeX, std::max(sizeY, sizeZ));
-    info.normalizationScale = largestSize > 0.0f ? 8.0f / largestSize : 1.0f;
+    info.normalizationScale = largestSize > 0.0f ? 1.0f / largestSize : 1.0f;
 
     for (Point& point : points) {
         point.x = (point.x - info.originalCenter.x) * info.normalizationScale;
         point.y = (point.y - info.originalCenter.y) * info.normalizationScale;
         point.z = (point.z - info.originalCenter.z) * info.normalizationScale;
     }
+}
+
+static void ApplyCoordinateCorrection(std::vector<Point>& points) {
+    for (Point& point : points) {
+        point.y = -point.y;
+    }
+}
+
+static void FlipPointCloudVertical(std::vector<Point>& points, PointCloudInfo& info) {
+    for (Point& point : points) {
+        point.y = -point.y;
+    }
+    info.flippedVertically = !info.flippedVertically;
 }
 
 static Vector3 CameraForward(float yaw, float pitch) {
@@ -281,7 +295,7 @@ static Vector3 CameraRight(const Vector3& forward) {
 }
 
 static void ResetCamera(Camera3D& camera, float& yaw, float& pitch) {
-    camera.position = {0.0f, 1.5f, -12.0f};
+    camera.position = {0.0f, 0.2f, -2.5f};
     yaw = 0.0f;
     pitch = 0.0f;
     camera.up = {0.0f, 1.0f, 0.0f};
@@ -310,8 +324,8 @@ static void UpdateFreeCamera(Camera3D& camera, float& yaw, float& pitch) {
     if (IsKeyDown(KEY_S)) move = Vector3Subtract(move, forward);
     if (IsKeyDown(KEY_D)) move = Vector3Add(move, right);
     if (IsKeyDown(KEY_A)) move = Vector3Subtract(move, right);
-    if (IsKeyDown(KEY_E)) move.y += 1.0f;
-    if (IsKeyDown(KEY_Q)) move.y -= 1.0f;
+    if (IsKeyDown(KEY_Q)) move.y += 1.0f;
+    if (IsKeyDown(KEY_E)) move.y -= 1.0f;
 
     const float wheel = GetMouseWheelMove();
     if (wheel != 0.0f) {
@@ -350,9 +364,9 @@ static void DrawPointCloud(const std::vector<Point>& points, const Camera3D& cam
     rlEnd();
 }
 
-static void DrawOverlay(int pointCount, bool hasColor, float pointSize, bool showGrid, const std::string& plyPath) {
+static void DrawOverlay(int pointCount, bool hasColor, float pointSize, bool showGrid, bool flippedVertically, const std::string& plyPath) {
     const int panelWidth = 460;
-    const int panelHeight = 210;
+    const int panelHeight = 230;
     DrawRectangle(12, 12, panelWidth, panelHeight, {0, 0, 0, 150});
     DrawRectangleLines(12, 12, panelWidth, panelHeight, {255, 255, 255, 55});
 
@@ -361,9 +375,10 @@ static void DrawOverlay(int pointCount, bool hasColor, float pointSize, bool sho
     DrawText(TextFormat("Color: %s", hasColor ? "PLY RGB" : "default white"), 24, 76, 20, RAYWHITE);
     DrawText(TextFormat("Point size: %.0f", pointSize), 24, 102, 20, RAYWHITE);
     DrawText(TextFormat("Grid: %s", showGrid ? "on" : "off"), 24, 128, 20, RAYWHITE);
+    DrawText(TextFormat("Flip: %s", flippedVertically ? "on" : "off"), 24, 154, 20, RAYWHITE);
 
-    DrawText("RMB drag rotate | Wheel zoom | WASD move | Q/E up/down", 24, 158, 16, LIGHTGRAY);
-    DrawText("Shift faster | 1/2/3 point size | G grid | R reset", 24, 180, 16, LIGHTGRAY);
+    DrawText("RMB drag rotate | Wheel zoom | WASD move | Q up | E down", 24, 184, 16, LIGHTGRAY);
+    DrawText("Shift faster | 1/2/3 size | G grid | F flip | R reset", 24, 206, 16, LIGHTGRAY);
 
     const std::string fileLine = "File: " + plyPath;
     DrawText(fileLine.c_str(), 12, GetScreenHeight() - 28, 16, LIGHTGRAY);
@@ -376,6 +391,7 @@ int main(int argc, char** argv) {
     std::vector<Point> points;
     try {
         points = LoadPly(plyPath, cloudInfo);
+        ApplyCoordinateCorrection(points);
         NormalizePointCloud(points, cloudInfo);
     } catch (const std::exception& error) {
         std::cerr << "Viewer error: " << error.what() << '\n';
@@ -384,7 +400,7 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "Loaded " << points.size() << " points from " << plyPath << '\n';
-    std::cout << "Controls: RMB drag rotate, wheel zoom, WASD move, Q/E up/down, Shift fast.\n";
+    std::cout << "Controls: RMB drag rotate, wheel zoom, WASD move, Q up, E down, F flip.\n";
 
     SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
     InitWindow(1280, 720, "Raylib PLY Point Cloud Viewer");
@@ -403,6 +419,7 @@ int main(int argc, char** argv) {
         if (IsKeyPressed(KEY_TWO)) pointSize = 2.0f;
         if (IsKeyPressed(KEY_THREE)) pointSize = 3.0f;
         if (IsKeyPressed(KEY_G)) showGrid = !showGrid;
+        if (IsKeyPressed(KEY_F)) FlipPointCloudVertical(points, cloudInfo);
         if (IsKeyPressed(KEY_R)) ResetCamera(camera, yaw, pitch);
 
         UpdateFreeCamera(camera, yaw, pitch);
@@ -417,7 +434,7 @@ int main(int argc, char** argv) {
         DrawPointCloud(points, camera, pointSize);
         EndMode3D();
 
-        DrawOverlay(static_cast<int>(points.size()), cloudInfo.hasColor, pointSize, showGrid, plyPath);
+        DrawOverlay(static_cast<int>(points.size()), cloudInfo.hasColor, pointSize, showGrid, cloudInfo.flippedVertically, plyPath);
 
         EndDrawing();
     }

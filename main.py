@@ -4,9 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-
-from scripts.extract_frames import extract_frames
-from scripts.run_colmap import run_colmap
+import sys
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -126,10 +124,26 @@ def launch_viewer(executable, ply_path):
     subprocess.Popen([str(executable), str(ply_path)], cwd=executable.parent)
 
 
+def count_images(image_dir):
+    patterns = ("*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG")
+    count = 0
+    for pattern in patterns:
+        count += len(list(Path(image_dir).glob(pattern)))
+    return count
+
+
+def run_python_script(script_path, extra_args=None):
+    command = [sys.executable, str(script_path)]
+    if extra_args:
+        command.extend(extra_args)
+    subprocess.run(command, check=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Automated video-to-3D photogrammetry pipeline.")
     parser.add_argument("--video", help="Path to the input video. If omitted, the first video in data/input_video is used.")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Path to config.json")
+    parser.add_argument("--no-filter", action="store_true", help="Skip adaptive frame selection and use data/images directly")
     parser.add_argument("--no-viewer", action="store_true", help="Run reconstruction without opening the C++ viewer")
     parser.add_argument("--skip-viewer-build", action="store_true", help="Open the existing viewer.exe without recompiling")
     args = parser.parse_args()
@@ -139,28 +153,54 @@ def main():
 
     input_video_dir = project_path(paths["input_video_dir"]).resolve()
     image_dir = project_path(paths["image_dir"]).resolve()
+    selected_image_dir = (PROJECT_ROOT / "data" / "images_selected").resolve()
+    verified_image_dir = (PROJECT_ROOT / "data" / "images_verified").resolve()
     sparse_dir = project_path(paths["sparse_dir"]).resolve()
     dense_dir = project_path(paths["dense_dir"]).resolve()
-    database_path = project_path(paths["database_path"]).resolve()
+    fused_ply = dense_dir / "0" / "fused.ply"
 
-    print("[0/3] Starting photogrammetry pipeline")
+    print("[0/4] Starting photogrammetry pipeline")
     print(f"Project root: {PROJECT_ROOT}")
 
     video_path = prepare_video(args.video, input_video_dir)
-    extract_frames(video_path, image_dir, settings["fps"])
 
-    log_path = PROJECT_ROOT / "logs" / "colmap.log"
-
-    fused_ply = run_colmap(
-        image_dir=image_dir,
-        sparse_dir=sparse_dir,
-        dense_dir=dense_dir,
-        database_path=database_path,
-        options=settings["colmap"],
-        log_path=log_path,
+    print("[1/4] Extracting frames...")
+    run_python_script(
+        PROJECT_ROOT / "scripts" / "extract_frames.py",
+        ["--video", str(video_path), "--output-dir", str(image_dir)],
     )
 
-    print("\n[3/3] Pipeline finished")
+    input_frame_count = count_images(image_dir)
+
+    colmap_image_dir = image_dir
+    if not args.no_filter:
+        print("[2/4] Selecting frames...")
+        run_python_script(PROJECT_ROOT / "scripts" / "auto_select_frames.py")
+        selected_frame_count = count_images(selected_image_dir)
+        reduction_percent = 100.0 * (1.0 - (selected_frame_count / max(1, input_frame_count)))
+        print(f"      Total input frames: {input_frame_count}")
+        print(f"      Selected frames: {selected_frame_count}")
+        print(f"      Reduction: {reduction_percent:.1f}%")
+        print("[3/4] Verifying geometry...")
+        run_python_script(PROJECT_ROOT / "scripts" / "geometric_filter.py")
+        verified_frame_count = count_images(verified_image_dir)
+        verified_reduction_percent = 100.0 * (1.0 - (verified_frame_count / max(1, selected_frame_count)))
+        print(f"      Total selected frames: {selected_frame_count}")
+        print(f"      Verified frames: {verified_frame_count}")
+        print(f"      Reduction: {verified_reduction_percent:.1f}%")
+        colmap_image_dir = verified_image_dir
+    else:
+        print("[2/4] Skipping frame selection (--no-filter)")
+        print(f"      Total input frames: {input_frame_count}")
+        print("[3/4] Skipping geometry verification (--no-filter)")
+
+    print("[4/4] Running COLMAP...")
+    run_python_script(
+        PROJECT_ROOT / "scripts" / "run_colmap.py",
+        ["--config", str(Path(args.config).resolve()), "--image-dir", str(colmap_image_dir)],
+    )
+
+    print("\n[4/4] Pipeline finished")
     print(f"Point cloud saved at: {fused_ply}")
     if os.path.exists(fused_ply):
         print("Reconstruction successful")

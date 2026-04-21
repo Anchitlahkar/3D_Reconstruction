@@ -16,6 +16,8 @@ logs/
 # Generated reconstruction data
 data/database.db
 data/images/
+data/images_selected/
+data/images_verified/
 data/sparse/
 data/dense/
 

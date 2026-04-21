@@ -49,7 +49,7 @@ def update_state_from_line(line, state):
 
     if "Processed file" in line:
         state["feature_count"] += 1
-    if "Matching block" in line:
+    if "Matching block" in line or "Matching image" in line:
         state["matching_count"] += 1
     if "Registering image" in line:
         state["mapping_count"] += 1

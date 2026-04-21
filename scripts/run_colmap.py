@@ -1,4 +1,5 @@
 import json
+import argparse
 import shutil
 import subprocess
 import sys
@@ -96,8 +97,7 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
     dense_dir.mkdir(parents=True, exist_ok=True)
     fused_ply.parent.mkdir(parents=True, exist_ok=True)
 
-    matcher_type = options.get("matcher", "sequential")
-    matcher_cmd = f"{matcher_type}_matcher"
+    matcher_cmd = "sequential_matcher"
 
     steps = [
         (
@@ -115,6 +115,8 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
                 "1",
                 "--SiftExtraction.use_gpu",
                 gpu_flag,
+                "--SiftExtraction.max_num_features",
+                "12000",
             ],
         ),
         (
@@ -126,6 +128,10 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
                 str(database_path),
                 "--SiftMatching.use_gpu",
                 gpu_flag,
+                "--SiftMatching.guided_matching",
+                "1",
+                "--SiftMatching.max_num_matches",
+                "32768",
             ],
         ),
         (
@@ -139,6 +145,10 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
                 str(image_dir),
                 "--output_path",
                 str(sparse_dir),
+                "--Mapper.num_threads",
+                "8",
+                "--Mapper.init_min_tri_angle",
+                "2",
             ],
         ),
         (
@@ -224,15 +234,24 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
 
 
 def main():
-    settings = load_settings(CONFIG_PATH)
+    parser = argparse.ArgumentParser(description="Run the COLMAP reconstruction pipeline.")
+    parser.add_argument("--config", default=str(CONFIG_PATH), help="Path to config.json")
+    parser.add_argument("--image-dir", help="Override image directory. Defaults to data/images_verified.")
+    args = parser.parse_args()
+
+    settings = load_settings(args.config)
     paths = settings["paths"]
     options = settings["colmap"]
 
-    image_dir = project_path(paths["image_dir"]).resolve()
+    image_dir = project_path(args.image_dir).resolve() if args.image_dir else (PROJECT_ROOT / "data" / "images_verified").resolve()
     sparse_dir = project_path(paths["sparse_dir"]).resolve()
     dense_dir = project_path(paths["dense_dir"]).resolve()
     database_path = project_path(paths["database_path"]).resolve()
     log_path = PROJECT_ROOT / "logs" / "colmap.log"
+
+    if not image_dir.exists() or not has_input_images(image_dir):
+        print(f"Error: no input images found in {image_dir}")
+        raise SystemExit(1)
 
     run_colmap(
         image_dir=image_dir,
