@@ -15,14 +15,15 @@ if sys.version_info < (3, 10):
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LOG_PATH = PROJECT_ROOT / "logs" / "colmap.log"
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "data" / "dense" / "0" / "fused.ply"
-STEP_ORDER = [
-    "Feature Extraction",
-    "Matching",
-    "Sparse Reconstruction",
-    "Undistort",
-    "Dense Stereo",
-    "Fusion",
-]
+STEP_ORDER = ["feature", "match", "map", "dense", "fuse"]
+STEP_LABELS = {
+    "feature": "feature",
+    "match": "match",
+    "map": "map",
+    "undistort": "dense",
+    "dense": "dense",
+    "fuse": "fuse",
+}
 
 
 def is_running(pid):
@@ -33,12 +34,11 @@ def is_running(pid):
 
 def update_state_from_line(line, state):
     if line.startswith("[STEP] "):
-        step_name = line[7:].strip()
-        if step_name in STEP_ORDER:
-            step_index = STEP_ORDER.index(step_name)
-            if step_index + 1 > state["completed_steps"]:
-                state["completed_steps"] = step_index
-            state["current_step"] = step_name
+        raw_step = line[7:].strip()
+        mapped_step = STEP_LABELS.get(raw_step, raw_step)
+        if mapped_step in STEP_ORDER:
+            state["current_step"] = mapped_step
+            state["completed_steps"] = max(state["completed_steps"], STEP_ORDER.index(mapped_step))
 
     if "[DONE]" in line:
         state["done"] = True
@@ -50,29 +50,29 @@ def update_state_from_line(line, state):
     if "Processed file" in line:
         state["feature_count"] += 1
     if "Matching block" in line or "Matching image" in line:
-        state["matching_count"] += 1
+        state["match_count"] += 1
     if "Registering image" in line:
-        state["mapping_count"] += 1
+        state["map_count"] += 1
     if "Processing view" in line:
         state["dense_count"] += 1
     if "Fusing image" in line:
-        state["fusion_count"] += 1
+        state["fuse_count"] += 1
 
 
 def monitor_log(log_path, pid=None):
     state = {
-        "current_step": "Waiting",
+        "current_step": "waiting",
         "completed_steps": 0,
         "feature_count": 0,
-        "matching_count": 0,
-        "mapping_count": 0,
+        "match_count": 0,
+        "map_count": 0,
         "dense_count": 0,
-        "fusion_count": 0,
+        "fuse_count": 0,
         "done": False,
         "error": False,
     }
 
-    pbar = tqdm(total=len(STEP_ORDER), desc="COLMAP Pipeline", ncols=100)
+    pbar = tqdm(total=len(STEP_ORDER), desc="COLMAP", ncols=100)
     last_position = 0
 
     try:
@@ -87,8 +87,8 @@ def monitor_log(log_path, pid=None):
             pbar.n = min(state["completed_steps"], len(STEP_ORDER))
             pbar.set_postfix_str(
                 f"{state['current_step']} | feat:{state['feature_count']} "
-                f"match:{state['matching_count']} map:{state['mapping_count']} "
-                f"dense:{state['dense_count']} fuse:{state['fusion_count']}"
+                f"match:{state['match_count']} map:{state['map_count']} "
+                f"dense:{state['dense_count']} fuse:{state['fuse_count']}"
             )
             pbar.refresh()
 
@@ -107,7 +107,6 @@ def monitor_log(log_path, pid=None):
                         log_file.seek(last_position)
                         for line in log_file:
                             update_state_from_line(line.strip(), state)
-                        last_position = log_file.tell()
                 print("\nPipeline process ended")
                 break
 

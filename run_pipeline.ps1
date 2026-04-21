@@ -12,6 +12,7 @@ $colmapDir = Join-Path $projectRoot "colmap_bin\COLMAP-3.9.1-windows-cuda"
 $mainScript = Join-Path $projectRoot "main.py"
 $monitorScript = Join-Path $projectRoot "scripts\progress_monitor.py"
 $logPath = Join-Path $projectRoot "logs\colmap.log"
+$outputPath = Join-Path $projectRoot "data\dense\0\fused.ply"
 
 if (!(Test-Path $pythonExe)) {
     $pythonExe = "python"
@@ -57,7 +58,13 @@ try {
     }
 
     Write-Host ""
-    Write-Host "Reconstruction Complete" -ForegroundColor Green
+    if (Test-Path $outputPath) {
+        Write-Host "Reconstruction Complete" -ForegroundColor Green
+        Write-Host "Output: $outputPath" -ForegroundColor Green
+    }
+    else {
+        throw "Pipeline finished without producing fused.ply"
+    }
 } finally {
     Pop-Location
 }

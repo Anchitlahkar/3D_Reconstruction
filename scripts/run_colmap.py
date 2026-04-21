@@ -1,5 +1,5 @@
-import json
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -66,9 +66,39 @@ def write_log_line(log_file, text):
     log_file.flush()
 
 
-def run_step(name, cmd, log_file):
+def run_step(name, command, log_file):
     write_log_line(log_file, f"[STEP] {name}")
-    subprocess.run(cmd, stdout=log_file, stderr=log_file, check=True)
+    subprocess.run(command, stdout=log_file, stderr=log_file, check=True)
+
+
+def find_best_model(sparse_dir):
+    sparse_path = Path(sparse_dir)
+    models = [d for d in sparse_path.iterdir() if d.is_dir() and (d / "points3D.bin").exists()]
+    if not models:
+        # Try .txt if .bin doesn't exist
+        models = [d for d in sparse_path.iterdir() if d.is_dir() and (d / "points3D.txt").exists()]
+    
+    if not models:
+        return None
+    
+    # Best model is the one with the largest points3D file
+    best_model = None
+    max_size = -1
+    
+    for model in models:
+        p_bin = model / "points3D.bin"
+        p_txt = model / "points3D.txt"
+        size = 0
+        if p_bin.exists():
+            size = p_bin.stat().st_size
+        elif p_txt.exists():
+            size = p_txt.stat().st_size
+            
+        if size > max_size:
+            max_size = size
+            best_model = model
+            
+    return best_model
 
 
 def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_path):
@@ -82,11 +112,10 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
         raise RuntimeError(f"No input images found in: {image_dir}")
 
     colmap = resolve_executable(options.get("executable", "colmap"))
-    gpu_flag = "1" if bool(options.get("use_gpu", True)) else "0"
-    gpu_index = str(options.get("gpu_index", 0)) if bool(options.get("use_gpu", True)) else "-1"
-    camera_model = options.get("camera_model", "SIMPLE_RADIAL")
+    use_gpu = bool(options.get("use_gpu", True))
+    gpu_flag = "1" if use_gpu else "0"
+    gpu_index = str(options.get("gpu_index", 0)) if use_gpu else "-1"
 
-    sparse_model = sparse_dir / "0"
     fused_ply = dense_dir / "0" / "fused.ply"
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -97,11 +126,13 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
     dense_dir.mkdir(parents=True, exist_ok=True)
     fused_ply.parent.mkdir(parents=True, exist_ok=True)
 
-    matcher_cmd = "sequential_matcher"
-
+    # Determine matcher based on image count
+    image_count = len(list(image_dir.glob("*.jpg"))) + len(list(image_dir.glob("*.png")))
+    matcher_type = "exhaustive_matcher" if image_count < 500 else "sequential_matcher"
+    
     steps = [
         (
-            "Feature Extraction",
+            "feature",
             [
                 colmap,
                 "feature_extractor",
@@ -109,21 +140,23 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
                 str(database_path),
                 "--image_path",
                 str(image_dir),
-                "--ImageReader.camera_model",
-                camera_model,
                 "--ImageReader.single_camera",
                 "1",
                 "--SiftExtraction.use_gpu",
                 gpu_flag,
                 "--SiftExtraction.max_num_features",
                 "12000",
+                "--SiftExtraction.estimate_affine_shape",
+                "1",
+                "--SiftExtraction.domain_size_pooling",
+                "1",
             ],
         ),
         (
-            "Matching",
+            "match",
             [
                 colmap,
-                matcher_cmd,
+                matcher_type,
                 "--database_path",
                 str(database_path),
                 "--SiftMatching.use_gpu",
@@ -135,7 +168,7 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
             ],
         ),
         (
-            "Sparse Reconstruction",
+            "map",
             [
                 colmap,
                 "mapper",
@@ -148,46 +181,70 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
                 "--Mapper.num_threads",
                 "8",
                 "--Mapper.init_min_tri_angle",
-                "2",
+                "1",
+                "--Mapper.multiple_models",
+                "1",
+                "--Mapper.extract_colors",
+                "1",
             ],
         ),
-        (
-            "Undistort",
-            [
+    ]
+
+    start_time = time.time()
+
+    with log_path.open("w", encoding="utf-8") as log_file:
+        write_log_line(log_file, f"=== COLMAP pipeline started at {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
+        write_log_line(log_file, f"[INFO] Images: {image_dir} ({image_count} images)")
+        write_log_line(log_file, f"[INFO] Matcher: {matcher_type}")
+        write_log_line(log_file, f"[INFO] Sparse: {sparse_dir}")
+        write_log_line(log_file, f"[INFO] Dense: {dense_dir}")
+        try:
+            for name, command in steps:
+                run_step(name, command, log_file)
+
+            # Find the best sparse model
+            best_sparse = find_best_model(sparse_dir)
+            if not best_sparse:
+                 raise RuntimeError(f"Sparse reconstruction failed. No models found in: {sparse_dir}")
+            
+            write_log_line(log_file, f"[INFO] Using best sparse model: {best_sparse}")
+            
+            # Undistort step using the best model
+            run_step("undistort", [
                 colmap,
                 "image_undistorter",
                 "--image_path",
                 str(image_dir),
                 "--input_path",
-                str(sparse_model),
+                str(best_sparse),
                 "--output_path",
                 str(dense_dir),
                 "--output_type",
                 "COLMAP",
                 "--max_image_size",
                 "1200",
-            ],
-        ),
-        (
-            "Dense Stereo",
-            [
+            ], log_file)
+            
+            # Dense stereo step
+            run_step("dense", [
                 colmap,
                 "patch_match_stereo",
                 "--workspace_path",
                 str(dense_dir),
                 "--workspace_format",
                 "COLMAP",
-                "--PatchMatchStereo.gpu_index",
-                gpu_index,
                 "--PatchMatchStereo.geom_consistency",
                 "1",
                 "--PatchMatchStereo.num_iterations",
                 "3",
-            ],
-        ),
-        (
-            "Fusion",
-            [
+                "--PatchMatchStereo.window_radius",
+                "4",
+                "--PatchMatchStereo.gpu_index",
+                gpu_index,
+            ], log_file)
+            
+            # Fusion step
+            run_step("fuse", [
                 colmap,
                 "stereo_fusion",
                 "--workspace_path",
@@ -198,23 +255,9 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
                 "geometric",
                 "--output_path",
                 str(fused_ply),
-            ],
-        ),
-    ]
-
-    start_time = time.time()
-
-    with log_path.open("a", encoding="utf-8") as log_file:
-        write_log_line(log_file, "")
-        write_log_line(log_file, f"=== COLMAP pipeline started at {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
-        write_log_line(log_file, f"[INFO] Images: {image_dir}")
-        write_log_line(log_file, f"[INFO] Sparse: {sparse_dir}")
-        write_log_line(log_file, f"[INFO] Dense: {dense_dir}")
-        try:
-            for name, cmd in steps:
-                run_step(name, cmd, log_file)
-                if name == "Sparse Reconstruction" and not sparse_model.exists():
-                    raise RuntimeError(f"Sparse reconstruction failed. Missing model folder: {sparse_model}")
+                "--StereoFusion.min_num_pixels",
+                "3",
+            ], log_file)
 
             runtime = time.time() - start_time
 
@@ -228,30 +271,25 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
             write_log_line(log_file, f"[ERROR] {error}")
             raise
 
+
     print(f"Point cloud saved at: {fused_ply}")
-    print(f"Total runtime: {runtime:.2f} seconds")
-    return fused_ply
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run the COLMAP reconstruction pipeline.")
+    parser = argparse.ArgumentParser(description="Run a room-scale COLMAP reconstruction pipeline.")
     parser.add_argument("--config", default=str(CONFIG_PATH), help="Path to config.json")
-    parser.add_argument("--image-dir", help="Override image directory. Defaults to data/images_verified.")
+    parser.add_argument("--image-dir", help="Override image directory. Defaults to data/images.")
     args = parser.parse_args()
 
     settings = load_settings(args.config)
     paths = settings["paths"]
     options = settings["colmap"]
 
-    image_dir = project_path(args.image_dir).resolve() if args.image_dir else (PROJECT_ROOT / "data" / "images_verified").resolve()
+    image_dir = project_path(args.image_dir).resolve() if args.image_dir else project_path(paths["image_dir"]).resolve()
     sparse_dir = project_path(paths["sparse_dir"]).resolve()
     dense_dir = project_path(paths["dense_dir"]).resolve()
     database_path = project_path(paths["database_path"]).resolve()
     log_path = PROJECT_ROOT / "logs" / "colmap.log"
-
-    if not image_dir.exists() or not has_input_images(image_dir):
-        print(f"Error: no input images found in {image_dir}")
-        raise SystemExit(1)
 
     run_colmap(
         image_dir=image_dir,

@@ -1,6 +1,6 @@
 # 3D Reconstruction Working Notes
 
-This file is the current reality-check document for the repo. It reflects how the code behaves today, even where that behavior differs from older docs or config values.
+This file is the current reality-check document for the repo. It reflects how the code behaves today.
 
 ## What The Project Does
 
@@ -39,10 +39,7 @@ So the real flow is:
 run_pipeline.ps1
   -> main.py
      -> scripts/extract_frames.py
-     -> scripts/auto_select_frames.py
-     -> scripts/geometric_filter.py
      -> scripts/run_colmap.py
-     -> viewer/viewer.exe   (unless --no-viewer)
 ```
 
 For checking an already-generated model in the terminal, use:
@@ -55,7 +52,7 @@ For checking an already-generated model in the terminal, use:
 
 ### `main.py`
 
-`main.py` is the real orchestration layer now.
+`main.py` is the orchestration layer.
 
 It:
 
@@ -63,21 +60,16 @@ It:
 - resolves an input video from `--video` or `data/input_video/`
 - copies the input video into `data/input_video/` when needed
 - extracts frames into `data/images/`
-- optionally filters frames into `data/images_selected/`
-- optionally verifies geometry into `data/images_verified/`
-- runs COLMAP against the verified set by default
-- optionally rebuilds and launches the viewer
+- runs COLMAP against `data/images/`
 
 Useful flags:
 
 ```powershell
 .\venv\Scripts\python.exe .\main.py --video path\to\input.mp4
-.\venv\Scripts\python.exe .\main.py --no-filter
-.\venv\Scripts\python.exe .\main.py --no-viewer
-.\venv\Scripts\python.exe .\main.py --skip-viewer-build
+.\venv\Scripts\python.exe .\main.py --config .\config.json
 ```
 
-This direct Python entry point still works, but the recommended user-facing way to run the project is through the `.ps1` scripts in the terminal.
+The direct Python entry point still works, but the recommended user-facing way to run the project is through the `.ps1` scripts.
 
 ### `scripts/extract_frames.py`
 
@@ -85,47 +77,17 @@ This script uses `ffmpeg` to extract JPG frames into `data/images/`.
 
 Current behavior:
 
-- computes extraction FPS from video duration
-- uses higher FPS for shorter clips
-- caps output to `MAX_FRAMES = 2000`
+- always extracts at `fps = 4`
+- downscales frames to max width `1200`
 - deletes old `.jpg` frames in the target folder before writing new ones
 
 Dependencies used here:
 
 - `ffmpeg` in PATH
-- OpenCV (`cv2`) as a fallback for duration probing
-
-### `scripts/auto_select_frames.py`
-
-This stage reduces redundancy before COLMAP.
-
-It:
-
-- reads images from `data/images/`
-- computes ORB features on resized grayscale images
-- compares frame-to-frame overlap with a brute-force matcher
-- keeps a subset in `data/images_selected/`
-
-Current tuning:
-
-- target range: roughly `150` to `300` selected frames
-- force-keep interval: every `10` frames
-- minimum spacing: `2` frames
-
-### `scripts/geometric_filter.py`
-
-This stage removes geometrically weak transitions from the selected set.
-
-It:
-
-- reads from `data/images_selected/`
-- estimates an essential matrix between consecutive kept frames
-- keeps frames with inlier ratio `>= 0.2`
-- writes the verified set to `data/images_verified/`
 
 ### `scripts/run_colmap.py`
 
-This is the actual reconstruction runner.
+This is the reconstruction runner.
 
 It:
 
@@ -148,11 +110,14 @@ data/dense/0/fused.ply
 
 Important current details:
 
-- matcher is hardcoded to `sequential_matcher`
+- matcher is `sequential_matcher`
 - `ImageReader.single_camera` is hardcoded to `1`
+- feature extraction enables affine shape estimation and domain-size pooling
 - undistortion uses `--max_image_size 1200`
 - dense stereo uses `geom_consistency=1`
 - dense stereo uses `num_iterations=3`
+- dense stereo uses `window_radius=4`
+- stereo fusion uses `min_num_pixels=3`
 
 ### `scripts/progress_monitor.py`
 
@@ -184,11 +149,19 @@ It checks for:
 data/dense/0/fused.ply
 ```
 
-and launches:
+It also checks for:
 
 ```text
 viewer\viewer.exe
 ```
+
+and then launches:
+
+```text
+viewer\viewer.exe
+```
+
+This script is now the recommended way to open the viewer. The reconstruction pipeline itself does not launch the viewer automatically.
 
 ## Viewer Notes
 
@@ -204,11 +177,30 @@ Viewer binary:
 viewer/viewer.exe
 ```
 
+Viewer behavior from `viewer/main.cpp`:
+
+- accepts a PLY path as the first CLI argument
+- if no argument is given, searches several default paths and prefers `data/dense/0/fused.ply`
+- supports ASCII and `binary_little_endian` PLY files
+- requires vertex `x`, `y`, and `z` properties
+- uses embedded vertex colors when `red/green/blue` or `r/g/b` are present
+- applies a vertical coordinate correction before normalization
+- normalizes the point cloud to fit the viewer scene
+- shows an on-screen overlay with stats and controls
+
 Manual launch:
 
 ```powershell
 .\viewer\viewer.exe .\data\dense\0\fused.ply
 ```
+
+You can also run:
+
+```powershell
+.\viewer\viewer.exe
+```
+
+and let the viewer try its built-in default PLY locations.
 
 Current controls from `viewer/main.cpp`:
 
@@ -218,10 +210,39 @@ Current controls from `viewer/main.cpp`:
 - `Q`: move up
 - `E`: move down
 - `Shift`: faster movement
-- `1`, `2`, `3`: point size
+- `F`: flip vertical orientation (fix upside-down models)
 - `G`: toggle grid
-- `F`: flip vertical orientation
+- `V`: toggle density mode (dense vs light)
 - `R`: reset camera
+- `U`: rerun PCA alignment (resets flip)
+
+## Config Reality Check
+
+`config.json` is aligned with the current pipeline:
+
+- `"output_ply": "data/dense/0/fused.ply"`
+- `"matcher": "sequential_matcher"`
+- `"max_image_size": 1200`
+
+Still worth noting:
+
+- `scripts/extract_frames.py` hardcodes `fps=4` instead of reading `config.json`
+- `scripts/run_colmap.py` reads the COLMAP executable and GPU settings from config, but several tuning flags are still hardcoded in code
+- `run_pipeline.ps1` still injects one machine-specific FFmpeg path if it exists
+
+## Dependencies Right Now
+
+`requirements.txt` currently contains:
+
+- `tqdm`
+- `psutil`
+
+That matches the active Python scripts in the current pipeline.
+
+External tools still required:
+
+- `ffmpeg`
+- COLMAP
 
 ## Project Layout Right Now
 
@@ -235,9 +256,7 @@ Current controls from `viewer/main.cpp`:
 |-- view_existing_model.ps1
 |-- working.md
 |-- scripts/
-|   |-- auto_select_frames.py
 |   |-- extract_frames.py
-|   |-- geometric_filter.py
 |   |-- progress_monitor.py
 |   `-- run_colmap.py
 |-- viewer/
@@ -245,8 +264,6 @@ Current controls from `viewer/main.cpp`:
 |-- data/
 |   |-- input_video/
 |   |-- images/
-|   |-- images_selected/
-|   |-- images_verified/
 |   |-- sparse/
 |   `-- dense/
 |       `-- 0/
@@ -257,21 +274,6 @@ Current controls from `viewer/main.cpp`:
 `-- raylib/
 ```
 
-## Mismatches To Keep In Mind
-
-There are a few stale or incomplete pieces in the repo:
-
-- `requirements.txt` currently lists only `tqdm` and `psutil`
-- the code also imports `cv2` and `numpy`, so the dependency file is incomplete
-- `config.json` still says `"output_ply": "data/dense/fused.ply"`
-- the actual output path is `data/dense/0/fused.ply`
-- `config.json` still says `"matcher": "exhaustive"`
-- the active runner uses `sequential_matcher`
-- `config.json` still says `"max_image_size": 2000`
-- the active runner hardcodes `1200` for undistortion
-
-For now, the code is the source of truth.
-
 ## Recommended Ways To Run It
 
 ### Full pipeline from video
@@ -280,19 +282,7 @@ For now, the code is the source of truth.
 .\run_pipeline.ps1 --video .\path\to\input.mp4
 ```
 
-If `--video` is omitted, `main.py` will use the first supported video found in `data/input_video/`.
-
-### Run without frame filtering
-
-```powershell
-.\run_pipeline.ps1 --video .\path\to\input.mp4 --no-filter
-```
-
-### Run without opening the viewer
-
-```powershell
-.\run_pipeline.ps1 --video .\path\to\input.mp4 --no-viewer
-```
+If `--video` is omitted, `main.py` uses the first supported video found in `data/input_video/`.
 
 ### Open an existing reconstruction
 
@@ -318,7 +308,7 @@ data/input_video/
 
 ### `No input images found`
 
-This means the selected image folder passed into `scripts/run_colmap.py` is empty. Check earlier extraction and filtering stages first.
+This means `data/images/` is empty. Check frame extraction first.
 
 ### `COLMAP executable not found`
 
@@ -327,10 +317,6 @@ Check:
 - `config.json`
 - `colmap_bin/COLMAP-3.9.1-windows-cuda/`
 - the PATH setup in `run_pipeline.ps1`
-
-### `ModuleNotFoundError` for `cv2` or `numpy`
-
-Those packages are used by the current scripts but are not listed in `requirements.txt` yet.
 
 ### `Pipeline ended with an error. Check logs/colmap.log`
 
@@ -351,3 +337,7 @@ data/dense/0/fused.ply
 ```
 
 Run the reconstruction first.
+
+### `viewer\viewer.exe was not found`
+
+`view_existing_model.ps1` found the model but could not find the viewer binary. Restore or rebuild `viewer/viewer.exe` before trying again.

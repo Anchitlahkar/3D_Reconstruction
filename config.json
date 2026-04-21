@@ -1,19 +1,19 @@
 {
-  "fps": 2,
+  "fps": 4,
   "paths": {
     "input_video_dir": "data/input_video",
     "image_dir": "data/images",
     "sparse_dir": "data/sparse",
     "dense_dir": "data/dense",
     "database_path": "data/database.db",
-    "output_ply": "data/dense/fused.ply"
+    "output_ply": "data/dense/0/fused.ply"
   },
   "colmap": {
     "executable": "colmap_bin/COLMAP-3.9.1-windows-cuda/COLMAP.bat",
     "use_gpu": true,
     "camera_model": "SIMPLE_RADIAL",
     "single_camera": true,
-    "matcher": "exhaustive",
-    "max_image_size": 2000
+    "matcher": "sequential_matcher",
+    "max_image_size": 1200
   }
 }
