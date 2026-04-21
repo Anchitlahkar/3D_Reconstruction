@@ -85,7 +85,7 @@ Check these paths before your first run:
 
 ## Quick Start
 
-Run the full pipeline with a video:
+Run the full pipeline from the terminal with the PowerShell script:
 
 ```powershell
 .\run_pipeline.ps1 --video .\path\to\input.mp4
@@ -93,7 +93,7 @@ Run the full pipeline with a video:
 
 If `--video` is omitted, `main.py` will use the first supported video it finds in `data/input_video/`.
 
-Open an existing reconstruction without rerunning COLMAP:
+Check and open an existing reconstruction from the terminal with:
 
 ```powershell
 .\view_existing_model.ps1
@@ -101,11 +101,22 @@ Open an existing reconstruction without rerunning COLMAP:
 
 ## Usage
 
-Run the Python entry point directly:
+Recommended terminal commands:
 
 ```powershell
 .\venv\Scripts\python.exe .\main.py --video .\path\to\input.mp4
 ```
+
+For normal use, prefer the `.ps1` scripts in the terminal:
+
+```powershell
+.\run_pipeline.ps1 --video .\path\to\input.mp4
+.\run_pipeline.ps1 --video .\path\to\input.mp4 --no-filter
+.\run_pipeline.ps1 --video .\path\to\input.mp4 --no-viewer
+.\view_existing_model.ps1
+```
+
+Run `main.py` directly only if you specifically want to bypass the PowerShell wrapper.
 
 Useful flags:
 
@@ -152,7 +163,9 @@ Useful flags:
 
 ### 5. Viewing
 
-`viewer/viewer.exe` opens the fused point cloud in the custom Raylib viewer.
+`.\view_existing_model.ps1` is the recommended way to check the generated model from the terminal.
+
+That script verifies `data/dense/0/fused.ply` exists and then launches `viewer/viewer.exe`.
 
 ## Outputs
 
@@ -175,7 +188,7 @@ Useful flags:
 - `F`: flip vertical orientation
 - `R`: reset camera
 
-Manual launch:
+Direct viewer launch:
 
 ```powershell
 .\viewer\viewer.exe .\data\dense\0\fused.ply

@@ -45,6 +45,12 @@ run_pipeline.ps1
      -> viewer/viewer.exe   (unless --no-viewer)
 ```
 
+For checking an already-generated model in the terminal, use:
+
+```powershell
+.\view_existing_model.ps1
+```
+
 ## Main Pipeline Behavior
 
 ### `main.py`
@@ -70,6 +76,8 @@ Useful flags:
 .\venv\Scripts\python.exe .\main.py --no-viewer
 .\venv\Scripts\python.exe .\main.py --skip-viewer-build
 ```
+
+This direct Python entry point still works, but the recommended user-facing way to run the project is through the `.ps1` scripts in the terminal.
 
 ### `scripts/extract_frames.py`
 
@@ -291,6 +299,8 @@ If `--video` is omitted, `main.py` will use the first supported video found in `
 ```powershell
 .\view_existing_model.ps1
 ```
+
+This is the recommended way to check the model from the terminal.
 
 ## Troubleshooting
 
