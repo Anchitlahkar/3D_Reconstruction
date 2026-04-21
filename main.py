@@ -149,12 +149,15 @@ def main():
     video_path = prepare_video(args.video, input_video_dir)
     extract_frames(video_path, image_dir, settings["fps"])
 
+    log_path = PROJECT_ROOT / "logs" / "colmap.log"
+
     fused_ply = run_colmap(
         image_dir=image_dir,
         sparse_dir=sparse_dir,
         dense_dir=dense_dir,
         database_path=database_path,
         options=settings["colmap"],
+        log_path=log_path,
     )
 
     print("\n[3/3] Pipeline finished")

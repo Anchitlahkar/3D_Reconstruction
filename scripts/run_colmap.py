@@ -54,7 +54,10 @@ def clean_path(path):
 
 def has_input_images(image_dir):
     patterns = ("*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG")
-    return any(image_dir.glob(pattern) for pattern in patterns)
+    for pattern in patterns:
+        if any(image_dir.glob(pattern)):
+            return True
+    return False
 
 
 def write_log_line(log_file, text):
@@ -93,6 +96,9 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
     dense_dir.mkdir(parents=True, exist_ok=True)
     fused_ply.parent.mkdir(parents=True, exist_ok=True)
 
+    matcher_type = options.get("matcher", "sequential")
+    matcher_cmd = f"{matcher_type}_matcher"
+
     steps = [
         (
             "Feature Extraction",
@@ -115,7 +121,7 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
             "Matching",
             [
                 colmap,
-                "sequential_matcher",
+                matcher_cmd,
                 "--database_path",
                 str(database_path),
                 "--SiftMatching.use_gpu",

@@ -6,9 +6,10 @@ if ([string]::IsNullOrWhiteSpace($projectRoot)) {
     $projectRoot = (Get-Location).Path
 }
 
+$ffmpegBin = "C:\Users\Anchit\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1-full_build\bin"
 $pythonExe = Join-Path $projectRoot "venv\Scripts\python.exe"
 $colmapDir = Join-Path $projectRoot "colmap_bin\COLMAP-3.9.1-windows-cuda"
-$runScript = Join-Path $projectRoot "scripts\run_colmap.py"
+$mainScript = Join-Path $projectRoot "main.py"
 $monitorScript = Join-Path $projectRoot "scripts\progress_monitor.py"
 $logPath = Join-Path $projectRoot "logs\colmap.log"
 
@@ -16,12 +17,16 @@ if (!(Test-Path $pythonExe)) {
     $pythonExe = "python"
 }
 
+if (Test-Path $ffmpegBin) {
+    $env:Path = "$ffmpegBin;$env:Path"
+}
+
 if (!(Test-Path $colmapDir)) {
     throw "COLMAP folder not found: $colmapDir"
 }
 
-if (!(Test-Path $runScript)) {
-    throw "Pipeline script not found: $runScript"
+if (!(Test-Path $mainScript)) {
+    throw "Pipeline entry point not found: $mainScript"
 }
 
 if (!(Test-Path $monitorScript)) {
@@ -42,7 +47,8 @@ if (Test-Path $logPath) {
 
 Push-Location $projectRoot
 try {
-    $pipelineProcess = Start-Process -FilePath $pythonExe -ArgumentList "scripts/run_colmap.py" -PassThru
+    $pipelineArgs = @($mainScript) + $args
+    $pipelineProcess = Start-Process -FilePath $pythonExe -ArgumentList $pipelineArgs -PassThru
     & $pythonExe $monitorScript --pid $pipelineProcess.Id
     $pipelineProcess.WaitForExit()
 

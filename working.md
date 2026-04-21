@@ -54,12 +54,15 @@ Right now, the PowerShell pipeline is the cleanest way to run reconstruction if 
 - Windows
 - Python 3.10+
 - COLMAP with CUDA support
-- `tqdm`
-- `psutil`
+- Python packages from `requirements.txt`
 - `g++` if you want to rebuild the viewer
 - Raylib in `raylib/raylib-5.5_win64_mingw-w64/`
 
-The monitor now imports `psutil`, so both `tqdm` and `psutil` must be installed in the active environment.
+Install the Python dependencies with:
+
+```powershell
+.\venv\Scripts\python.exe -m pip install -r .\requirements.txt
+```
 
 ## Main Scripts
 
