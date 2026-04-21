@@ -1,11 +1,9 @@
-import os
-from pathlib import Path
+import json
 import shutil
 import subprocess
 import sys
 import time
-
-from tqdm import tqdm
+from pathlib import Path
 
 
 if sys.version_info < (3, 10):
@@ -13,9 +11,22 @@ if sys.version_info < (3, 10):
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CONFIG_PATH = PROJECT_ROOT / "config.json"
 
 
-def _resolve_executable(executable):
+def load_settings(config_path):
+    with Path(config_path).resolve().open("r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def project_path(relative_or_absolute_path):
+    path = Path(relative_or_absolute_path)
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
+
+
+def resolve_executable(executable):
     executable_path = Path(executable)
     if executable_path.is_absolute() and executable_path.exists():
         return str(executable_path)
@@ -33,7 +44,7 @@ def _resolve_executable(executable):
     )
 
 
-def _clean_path(path):
+def clean_path(path):
     path = Path(path)
     if path.is_file():
         path.unlink()
@@ -41,47 +52,46 @@ def _clean_path(path):
         shutil.rmtree(path)
 
 
-def _has_input_images(image_dir):
-    image_extensions = ("*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG")
-    return any(image_dir.glob(pattern) for pattern in image_extensions)
+def has_input_images(image_dir):
+    patterns = ("*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG")
+    return any(image_dir.glob(pattern) for pattern in patterns)
+
+
+def write_log_line(log_file, text):
+    log_file.write(f"{text}\n")
+    log_file.flush()
 
 
 def run_step(name, cmd, log_file):
-    tqdm.write(f"{name}...")
+    write_log_line(log_file, f"[STEP] {name}")
     subprocess.run(cmd, stdout=log_file, stderr=log_file, check=True)
 
 
-def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options):
+def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_path):
     image_dir = Path(image_dir).resolve()
     sparse_dir = Path(sparse_dir).resolve()
     dense_dir = Path(dense_dir).resolve()
     database_path = Path(database_path).resolve()
+    log_path = Path(log_path).resolve()
 
-    if not image_dir.exists() or not _has_input_images(image_dir):
+    if not image_dir.exists() or not has_input_images(image_dir):
         raise RuntimeError(f"No input images found in: {image_dir}")
 
-    colmap = _resolve_executable(options.get("executable", "colmap"))
-    use_gpu = bool(options.get("use_gpu", True))
-    gpu_flag = "1" if use_gpu else "0"
-    gpu_index = str(options.get("gpu_index", 0)) if use_gpu else "-1"
+    colmap = resolve_executable(options.get("executable", "colmap"))
+    gpu_flag = "1" if bool(options.get("use_gpu", True)) else "0"
+    gpu_index = str(options.get("gpu_index", 0)) if bool(options.get("use_gpu", True)) else "-1"
     camera_model = options.get("camera_model", "SIMPLE_RADIAL")
-    single_camera = "1" if options.get("single_camera", True) else "0"
-    max_image_size = str(options.get("max_image_size", 2000))
 
     sparse_model = sparse_dir / "0"
     fused_ply = dense_dir / "0" / "fused.ply"
-    logs_dir = PROJECT_ROOT / "logs"
-    log_path = logs_dir / "colmap.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    tqdm.write("Cleaning previous outputs...")
-    _clean_path(database_path)
-    _clean_path(sparse_dir)
-    _clean_path(dense_dir)
-
+    clean_path(database_path)
+    clean_path(sparse_dir)
+    clean_path(dense_dir)
     sparse_dir.mkdir(parents=True, exist_ok=True)
     dense_dir.mkdir(parents=True, exist_ok=True)
     fused_ply.parent.mkdir(parents=True, exist_ok=True)
-    logs_dir.mkdir(parents=True, exist_ok=True)
 
     steps = [
         (
@@ -96,7 +106,7 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options):
                 "--ImageReader.camera_model",
                 camera_model,
                 "--ImageReader.single_camera",
-                single_camera,
+                "1",
                 "--SiftExtraction.use_gpu",
                 gpu_flag,
             ],
@@ -139,7 +149,7 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options):
                 "--output_type",
                 "COLMAP",
                 "--max_image_size",
-                max_image_size,
+                "1200",
             ],
         ),
         (
@@ -155,6 +165,8 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options):
                 gpu_index,
                 "--PatchMatchStereo.geom_consistency",
                 "1",
+                "--PatchMatchStereo.num_iterations",
+                "3",
             ],
         ),
         (
@@ -174,30 +186,57 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options):
         ),
     ]
 
-    start = time.time()
-    pbar = tqdm(total=len(steps), desc="COLMAP Pipeline", ncols=80)
+    start_time = time.time()
 
-    try:
-        with log_path.open("a", encoding="utf-8") as log_file:
-            log_file.write(f"\n=== COLMAP pipeline started at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+    with log_path.open("a", encoding="utf-8") as log_file:
+        write_log_line(log_file, "")
+        write_log_line(log_file, f"=== COLMAP pipeline started at {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
+        write_log_line(log_file, f"[INFO] Images: {image_dir}")
+        write_log_line(log_file, f"[INFO] Sparse: {sparse_dir}")
+        write_log_line(log_file, f"[INFO] Dense: {dense_dir}")
+        try:
             for name, cmd in steps:
                 run_step(name, cmd, log_file)
                 if name == "Sparse Reconstruction" and not sparse_model.exists():
                     raise RuntimeError(f"Sparse reconstruction failed. Missing model folder: {sparse_model}")
-                pbar.update(1)
-    finally:
-        pbar.close()
 
-    runtime = time.time() - start
+            runtime = time.time() - start_time
 
-    if os.path.exists(fused_ply):
-        print("SUCCESS: Reconstruction complete")
-    else:
-        print("ERROR: fused.ply missing")
-        raise RuntimeError(f"Point cloud not found: {fused_ply}")
+            if not fused_ply.exists():
+                write_log_line(log_file, "[ERROR] fused.ply missing")
+                raise RuntimeError(f"Point cloud not found: {fused_ply}")
+
+            write_log_line(log_file, f"[DONE] Point cloud saved at: {fused_ply}")
+            write_log_line(log_file, f"[DONE] Total runtime: {runtime:.2f} seconds")
+        except Exception as error:
+            write_log_line(log_file, f"[ERROR] {error}")
+            raise
 
     print(f"Point cloud saved at: {fused_ply}")
-    print(f"Log saved at: {log_path}")
     print(f"Total runtime: {runtime:.2f} seconds")
-
     return fused_ply
+
+
+def main():
+    settings = load_settings(CONFIG_PATH)
+    paths = settings["paths"]
+    options = settings["colmap"]
+
+    image_dir = project_path(paths["image_dir"]).resolve()
+    sparse_dir = project_path(paths["sparse_dir"]).resolve()
+    dense_dir = project_path(paths["dense_dir"]).resolve()
+    database_path = project_path(paths["database_path"]).resolve()
+    log_path = PROJECT_ROOT / "logs" / "colmap.log"
+
+    run_colmap(
+        image_dir=image_dir,
+        sparse_dir=sparse_dir,
+        dense_dir=dense_dir,
+        database_path=database_path,
+        options=options,
+        log_path=log_path,
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -1,34 +1,32 @@
 # Hybrid 3D Reconstruction Pipeline
 
-This project turns a video into a COLMAP reconstruction, saves the dense point cloud to `data/dense/0/fused.ply`, and opens it in a lightweight Raylib viewer.
+This project runs a COLMAP-based reconstruction from extracted images in `data/images/`, writes the final dense point cloud to `data/dense/0/fused.ply`, and opens that model in a Raylib viewer.
 
-## What The Pipeline Does
+## Current Workflow
 
-The current workflow is:
+The current system has two separate layers:
 
-1. Read a video from `--video` or from `data/input_video/`.
-2. Extract JPG frames into `data/images/` with FFmpeg.
-3. Clean old COLMAP outputs:
-   - `data/database.db`
-   - `data/sparse/`
-   - `data/dense/`
-4. Run the COLMAP pipeline with a quiet `tqdm` progress bar.
-5. Save COLMAP logs to `logs/colmap.log`.
-6. Write the dense point cloud to:
+1. `main.py`
+   - extracts frames from a video with FFmpeg
+   - calls the COLMAP runner
+   - can build and launch the viewer
 
-```text
-data/dense/0/fused.ply
-```
+2. `run_pipeline.ps1`
+   - runs the COLMAP stage directly from existing images in `data/images/`
+   - starts the progress monitor
+   - waits for the pipeline to finish
 
-7. Optionally compile and launch the C++ point cloud viewer.
+Right now, the PowerShell pipeline is the cleanest way to run reconstruction if your frames are already present.
 
 ## Project Layout
 
 ```text
 3D_Reconstruction/
+|-- .gitignore
 |-- config.json
 |-- main.py
 |-- run_pipeline.ps1
+|-- view_existing_model.ps1
 |-- working.md
 |-- logs/
 |   `-- colmap.log
@@ -41,7 +39,8 @@ data/dense/0/fused.ply
 |           `-- fused.ply
 |-- scripts/
 |   |-- extract_frames.py
-|   `-- run_colmap.py
+|   |-- run_colmap.py
+|   `-- progress_monitor.py
 |-- viewer/
 |   |-- main.cpp
 |   |-- viewer.exe
@@ -54,123 +53,164 @@ data/dense/0/fused.ply
 
 - Windows
 - Python 3.10+
-- FFmpeg available on `PATH`
 - COLMAP with CUDA support
-- `tqdm` installed in the project virtual environment
-- `g++` for rebuilding the viewer
-- Raylib headers and libraries in `raylib/raylib-5.5_win64_mingw-w64/`
+- `tqdm`
+- `psutil`
+- `g++` if you want to rebuild the viewer
+- Raylib in `raylib/raylib-5.5_win64_mingw-w64/`
 
-The current environment in this project already uses:
+The monitor now imports `psutil`, so both `tqdm` and `psutil` must be installed in the active environment.
 
-- Python virtual environment: `venv/`
-- COLMAP path from `config.json`:
+## Main Scripts
 
-```json
-"executable": "colmap_bin/COLMAP-3.9.1-windows-cuda/COLMAP.bat"
+### `scripts/run_colmap.py`
+
+This is the standalone COLMAP runner used by `run_pipeline.ps1`.
+
+It:
+
+- reads settings from `config.json`
+- uses images from `data/images/`
+- deletes previous:
+  - `data/database.db`
+  - `data/sparse/`
+  - `data/dense/`
+- redirects all COLMAP output to:
+
+```text
+logs/colmap.log
 ```
 
-If COLMAP is installed globally, you can switch that to:
+- runs these steps in order:
+  1. `feature_extractor`
+  2. `sequential_matcher`
+  3. `mapper`
+  4. `image_undistorter`
+  5. `patch_match_stereo`
+  6. `stereo_fusion`
 
-```json
-"executable": "colmap"
+- writes the final output to:
+
+```text
+data/dense/0/fused.ply
 ```
 
-## Main Entry Points
+### `scripts/progress_monitor.py`
 
-### Python
+This script tails `logs/colmap.log` and shows live progress.
 
-Run directly:
+It watches for:
+
+- `Processed file`
+- `Matching block`
+- `Registering image`
+- `Processing view`
+- `Fusing image`
+
+It tracks:
+
+- `feature_count`
+- `matching_count`
+- `mapping_count`
+- `dense_count`
+- `fusion_count`
+
+It exits when:
+
+- `data/dense/0/fused.ply` appears
+- the pipeline process exits
+- you press `Ctrl+C`
+
+### `run_pipeline.ps1`
+
+This is the current clean Windows entry point for reconstruction from existing images.
+
+It:
+
+- clears the screen
+- prints a header
+- ensures `logs/` exists
+- removes the old `logs/colmap.log`
+- starts `scripts/run_colmap.py` in the background
+- starts `scripts/progress_monitor.py` with the pipeline PID
+- waits for the pipeline to finish
+- prints `Reconstruction Complete`
+
+### `view_existing_model.ps1`
+
+This script opens the existing model without rerunning COLMAP.
+
+It checks for:
+
+```text
+data/dense/0/fused.ply
+```
+
+If the file exists, it launches:
+
+```text
+viewer/viewer.exe
+```
+
+If the file does not exist, it prints:
+
+```text
+No reconstruction found
+```
+
+## Recommended Usage
+
+### Run reconstruction from existing images
+
+```powershell
+.\run_pipeline.ps1
+```
+
+This path expects your frames to already exist in:
+
+```text
+data/images/
+```
+
+### Open the existing model
+
+```powershell
+.\view_existing_model.ps1
+```
+
+### Run the older end-to-end Python flow
 
 ```powershell
 .\venv\Scripts\python.exe .\main.py --video path\to\input.mp4
 ```
 
-If `--video` is omitted, `main.py` uses the first supported video found in `data/input_video/`.
+That route still:
+
+- copies the video into `data/input_video/` if needed
+- extracts frames with FFmpeg
+- calls `run_colmap(...)`
+- can build and launch the viewer
 
 Useful flags:
 
 ```powershell
 .\venv\Scripts\python.exe .\main.py --no-viewer
 .\venv\Scripts\python.exe .\main.py --skip-viewer-build
-.\venv\Scripts\python.exe .\main.py --config .\config.json
 ```
 
-### PowerShell
+## Output Paths
 
-Run the project launcher:
-
-```powershell
-.\run_pipeline.ps1
-```
-
-This script:
-
-- resolves paths from the script location instead of the current shell folder
-- adds FFmpeg and COLMAP to `PATH`
-- uses `venv\Scripts\python.exe` when available
-- forwards any extra arguments to `main.py`
-
-Example:
-
-```powershell
-.\run_pipeline.ps1 --video .\data\input_video\sample.mp4 --no-viewer
-```
-
-## Frame Extraction
-
-`scripts/extract_frames.py` uses FFmpeg to:
-
-- overwrite previous frame output
-- extract frames at the configured FPS
-- write images as:
-
-```text
-data/images/frame_000001.jpg
-data/images/frame_000002.jpg
-...
-```
-
-The FPS is controlled by `config.json`:
-
-```json
-{
-  "fps": 2
-}
-```
-
-Lower FPS is faster. Higher FPS produces more overlap and can help reconstruction quality, but also increases runtime and memory use.
-
-## COLMAP Pipeline
-
-`scripts/run_colmap.py` runs six steps with `subprocess.run(..., check=True)` and sends all COLMAP output to `logs/colmap.log`.
-
-The steps are:
-
-1. `feature_extractor`
-2. `sequential_matcher`
-3. `mapper`
-4. `image_undistorter`
-5. `patch_match_stereo`
-6. `stereo_fusion`
-
-The terminal stays mostly clean:
-
-- each stage name is printed with `tqdm.write(...)`
-- a progress bar shows overall status
-- COLMAP stdout and stderr are appended to `logs/colmap.log`
-
-At the end, the script checks for:
+The real reconstruction output is:
 
 ```text
 data/dense/0/fused.ply
 ```
 
-and prints:
+The current log file is:
 
-- success or failure
-- saved point cloud path
-- log file path
-- total runtime
+```text
+logs/colmap.log
+```
 
 ## Viewer
 
@@ -180,149 +220,129 @@ The viewer source is:
 viewer/main.cpp
 ```
 
-The Python pipeline can rebuild it automatically before launch. The executable path is:
+The compiled executable is:
 
 ```text
 viewer/viewer.exe
 ```
 
-### Manual Viewer Build
-
-If you want to compile it yourself:
-
-```powershell
-g++ .\viewer\main.cpp -o .\viewer\viewer.exe -std=c++17 -IC:\Extra_s\Code\C++_project\3D_Reconstruction\raylib\raylib-5.5_win64_mingw-w64\include -LC:\Extra_s\Code\C++_project\3D_Reconstruction\raylib\raylib-5.5_win64_mingw-w64\lib -lraylib -lopengl32 -lgdi32 -lwinmm
-```
-
-### Manual Viewer Launch
+Manual launch:
 
 ```powershell
 .\viewer\viewer.exe .\data\dense\0\fused.ply
 ```
 
-### Viewer Controls
+Viewer controls:
 
-- Right mouse button drag: rotate camera
-- Mouse wheel: move forward and backward
+- right mouse drag: rotate
+- mouse wheel: move forward/backward
 - `W`, `A`, `S`, `D`: move
-- `Q` / `E`: move down / up
+- `Q` / `E`: move down/up
 - `Shift`: faster movement
 - `1`, `2`, `3`: point size
 - `G`: toggle grid
 - `R`: reset camera
 
-## Configuration
+## Configuration Notes
 
-Current `config.json`:
+Current `config.json` still contains:
 
 ```json
-{
-  "fps": 2,
-  "paths": {
-    "input_video_dir": "data/input_video",
-    "image_dir": "data/images",
-    "sparse_dir": "data/sparse",
-    "dense_dir": "data/dense",
-    "database_path": "data/database.db",
-    "output_ply": "data/dense/fused.ply"
-  },
-  "colmap": {
-    "executable": "colmap_bin/COLMAP-3.9.1-windows-cuda/COLMAP.bat",
-    "use_gpu": true,
-    "camera_model": "SIMPLE_RADIAL",
-    "single_camera": true,
-    "matcher": "exhaustive",
-    "max_image_size": 2000
-  }
-}
+"output_ply": "data/dense/fused.ply"
 ```
 
-Important note:
+But the actual pipeline writes:
 
-- The active pipeline code writes to `data/dense/0/fused.ply`.
-- The `paths.output_ply` value in `config.json` still says `data/dense/fused.ply`.
-- `main.py` currently uses the path returned by `run_colmap.py`, so the pipeline still works.
-- That config entry is now stale and should be updated if you want the config to match the implementation.
+```text
+data/dense/0/fused.ply
+```
 
-## Logs
+So `config.json` still has a stale output path entry.
 
-All COLMAP command output is appended to:
+Also note:
+
+- `config.json` still says `"matcher": "exhaustive"`
+- the active `scripts/run_colmap.py` ignores that and uses `sequential_matcher`
+- `config.json` still says `"max_image_size": 2000`
+- the active runner currently hardcodes `1200`
+
+So the current code is the source of truth, not every field in `config.json`.
+
+## Performance Settings In The Current Runner
+
+The active COLMAP runner uses:
+
+- `--ImageReader.single_camera 1`
+- `--SiftExtraction.use_gpu 1` when GPU is enabled
+- `--SiftMatching.use_gpu 1` when GPU is enabled
+- `--max_image_size 1200`
+- `--PatchMatchStereo.num_iterations 3`
+
+This version is aimed more at cleaner execution and lower terminal noise than at maximum reconstruction density.
+
+## Logging And Progress
+
+The terminal stays relatively clean because:
+
+- COLMAP stdout/stderr goes into `logs/colmap.log`
+- the PowerShell script only shows the monitor
+- the monitor prints a `tqdm` bar plus counters
+
+The monitor is log-driven, so if COLMAP changes its console wording, some counters may stop moving even if the pipeline still works.
+
+## Troubleshooting
+
+### `No input images found`
+
+`scripts/run_colmap.py` only works if image files already exist in `data/images/`.
+
+Use `main.py` with a video first, or place frames in `data/images/`.
+
+### `COLMAP executable not found`
+
+Check:
+
+- `config.json`
+- `colmap_bin/COLMAP-3.9.1-windows-cuda/`
+- the PATH setup in `run_pipeline.ps1`
+
+### `ModuleNotFoundError: No module named 'psutil'`
+
+Install `psutil` in the project venv. The progress monitor now depends on it.
+
+### `Pipeline process exited. Check logs/colmap.log for details.`
+
+The runner ended before producing `fused.ply`. Open:
 
 ```text
 logs/colmap.log
 ```
 
-This is the first place to check when reconstruction fails.
+and inspect the last failing stage.
 
-## Typical Run
+### `No reconstruction found`
 
-```powershell
-.\run_pipeline.ps1 --video .\data\input_video\sample.mp4
+`view_existing_model.ps1` did not find:
+
+```text
+data/dense/0/fused.ply
 ```
 
-Expected high-level flow:
-
-1. Video is copied into `data/input_video/` if needed.
-2. Frames are extracted into `data/images/`.
-3. Old COLMAP outputs are deleted.
-4. The COLMAP progress bar advances through the six stages.
-5. `data/dense/0/fused.ply` is created.
-6. The viewer opens the result unless `--no-viewer` was passed.
-
-## Troubleshooting
-
-### `ffmpeg was not found`
-
-FFmpeg is not on `PATH`. Install FFmpeg or update `run_pipeline.ps1` so it points to the correct FFmpeg `bin` folder.
-
-### `COLMAP executable not found`
-
-Check `config.json` and make sure `colmap.executable` points to a valid `COLMAP.bat`, `COLMAP.exe`, or global `colmap` command.
-
-### `No input images found`
-
-Frame extraction did not produce any JPG files in `data/images/`, or the folder is empty.
-
-### `Sparse reconstruction failed. Missing model folder: data/sparse/0`
-
-COLMAP could not build a sparse model. Common causes:
-
-- too few frames
-- weak overlap between frames
-- motion blur
-- repetitive or textureless surfaces
-- reflective or transparent objects
-
-### `ERROR: fused.ply missing`
-
-Dense reconstruction failed. Check `logs/colmap.log` for the failing COLMAP stage.
+Run reconstruction first.
 
 ### Viewer says `Input is not a PLY file`
 
-That issue was caused by CRLF header parsing and has been fixed in the current viewer. Rebuild the viewer if you are still running an older `viewer.exe`.
+That CRLF parsing issue was fixed in the current viewer source. Rebuild `viewer.exe` if you are still using an older binary.
 
-### Viewer opens but shows the wrong file or nothing useful
+## Reality Check
 
-Launch it directly with the actual dense output:
-
-```powershell
-.\viewer\viewer.exe .\data\dense\0\fused.ply
-```
-
-## Notes On Performance And Quality
-
-- `sequential_matcher` is used now, which is a better fit for video frame sequences than exhaustive matching.
-- GPU is enabled through `SiftExtraction.use_gpu`, `SiftMatching.use_gpu`, and `PatchMatchStereo.gpu_index`.
-- `max_image_size` controls the dense stage memory and speed tradeoff.
-- Higher frame counts can improve coverage, but they also slow down matching and dense stereo.
-
-## Current Reality Check
-
-This document matches the code in:
+This document matches the current behavior of:
 
 - [main.py](/abs/path/c:/Extra_s/Code/C++_project/3D_Reconstruction/main.py:1)
 - [scripts/run_colmap.py](/abs/path/c:/Extra_s/Code/C++_project/3D_Reconstruction/scripts/run_colmap.py:1)
+- [scripts/progress_monitor.py](/abs/path/c:/Extra_s/Code/C++_project/3D_Reconstruction/scripts/progress_monitor.py:1)
 - [run_pipeline.ps1](/abs/path/c:/Extra_s/Code/C++_project/3D_Reconstruction/run_pipeline.ps1:1)
+- [view_existing_model.ps1](/abs/path/c:/Extra_s/Code/C++_project/3D_Reconstruction/view_existing_model.ps1:1)
 - [viewer/main.cpp](/abs/path/c:/Extra_s/Code/C++_project/3D_Reconstruction/viewer/main.cpp:1)
 
-If those files change again, update this doc at the same time so it keeps telling the truth.
+If you change the workflow again, update this file in the same pass. It keeps the whole project much less haunted.
