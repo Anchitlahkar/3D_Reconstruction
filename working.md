@@ -77,8 +77,8 @@ This script uses `ffmpeg` to extract JPG frames into `data/images/`.
 
 Current behavior:
 
-- always extracts at `fps = 4`
-- downscales frames to max width `1200`
+- always extracts at `fps = 2` (improved parallax)
+- downscales frames to max width `2000`
 - deletes old `.jpg` frames in the target folder before writing new ones
 
 Dependencies used here:
@@ -96,7 +96,7 @@ It:
 - logs every stage to `logs/colmap.log`
 - runs COLMAP in this order:
   1. `feature_extractor`
-  2. `sequential_matcher`
+  2. `exhaustive_matcher`
   3. `mapper`
   4. `image_undistorter`
   5. `patch_match_stereo`
@@ -110,14 +110,17 @@ data/dense/0/fused.ply
 
 Important current details:
 
-- matcher is `sequential_matcher`
+- matcher is `exhaustive_matcher`
 - `ImageReader.single_camera` is hardcoded to `1`
-- feature extraction enables affine shape estimation and domain-size pooling
-- undistortion uses `--max_image_size 1200`
+- feature extraction: `max_num_features=8192`, `contrast_threshold=0.01`, `edge_threshold=10`
+- undistortion uses `--max_image_size 2000`
+- mapper: `init_min_tri_angle=8.0`, `tri_min_angle=5.0`
 - dense stereo uses `geom_consistency=1`
-- dense stereo uses `num_iterations=3`
-- dense stereo uses `window_radius=4`
-- stereo fusion uses `min_num_pixels=3`
+- dense stereo uses `num_iterations=5`
+- dense stereo uses `window_radius=5`
+- dense stereo uses `filter_min_num_consistent=5`
+- stereo fusion uses `min_num_pixels=8`
+- stereo fusion uses `max_reproj_error=1.0`
 
 ### `scripts/progress_monitor.py`
 
@@ -179,6 +182,8 @@ viewer/viewer.exe
 
 Viewer behavior from `viewer/main.cpp`:
 
+- renders using `GL_POINTS` to eliminate "spiky" artifacts from triangle rendering
+- supports large models with coordinates up to 10,000 units
 - accepts a PLY path as the first CLI argument
 - if no argument is given, searches several default paths and prefers `data/dense/0/fused.ply`
 - supports ASCII and `binary_little_endian` PLY files
@@ -221,12 +226,12 @@ Current controls from `viewer/main.cpp`:
 `config.json` is aligned with the current pipeline:
 
 - `"output_ply": "data/dense/0/fused.ply"`
-- `"matcher": "sequential_matcher"`
-- `"max_image_size": 1200`
+- `"matcher": "exhaustive_matcher"`
+- `"max_image_size": 2000`
 
 Still worth noting:
 
-- `scripts/extract_frames.py` hardcodes `fps=4` instead of reading `config.json`
+- `scripts/extract_frames.py` reads `fps` and `max_image_size` from `config.json` if provided via `--config`
 - `scripts/run_colmap.py` reads the COLMAP executable and GPU settings from config, but several tuning flags are still hardcoded in code
 - `run_pipeline.ps1` still injects one machine-specific FFmpeg path if it exists
 

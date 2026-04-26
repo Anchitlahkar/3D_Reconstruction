@@ -114,8 +114,8 @@ Use `main.py` directly only if you want to bypass the PowerShell wrapper.
 `scripts/extract_frames.py`:
 
 - extracts JPG frames into `data/images/`
-- uses fixed `fps=4`
-- downscales frames to max width `1200`
+- uses fixed `fps=2` (optimized for better parallax)
+- downscales frames to max width `2000`
 - clears old JPG frames in the output folder before writing new ones
 
 ### 2. COLMAP Reconstruction
@@ -123,7 +123,7 @@ Use `main.py` directly only if you want to bypass the PowerShell wrapper.
 `scripts/run_colmap.py`:
 
 - clears previous reconstruction artifacts
-- uses `sequential_matcher` for video-ordered frames
+- uses `exhaustive_matcher` for better loop closure on objects
 - runs feature extraction, matching, mapping, undistortion, dense stereo, and fusion
 - logs every stage to `logs/colmap.log`
 - writes the final output to `data/dense/0/fused.ply`
@@ -131,13 +131,16 @@ Use `main.py` directly only if you want to bypass the PowerShell wrapper.
 Current COLMAP behavior:
 
 - `ImageReader.single_camera=1`
-- `SiftExtraction.estimate_affine_shape=1`
-- `SiftExtraction.domain_size_pooling=1`
-- `image_undistorter --max_image_size 1200`
+- `SiftExtraction.max_num_features=8192`
+- `SiftExtraction.contrast_threshold=0.01`
+- `SiftExtraction.edge_threshold=10`
+- `image_undistorter --max_image_size 2000`
+- `Mapper.init_min_tri_angle=8.0` (prevents depth uncertainty spikes)
 - `PatchMatchStereo.geom_consistency=1`
-- `PatchMatchStereo.num_iterations=3`
-- `PatchMatchStereo.window_radius=4`
-- `StereoFusion.min_num_pixels=3`
+- `PatchMatchStereo.num_iterations=5`
+- `PatchMatchStereo.window_radius=5`
+- `StereoFusion.min_num_pixels=8` (aggressive noise filtering)
+- `StereoFusion.max_reproj_error=1.0`
 
 ### 3. Progress Monitoring
 
@@ -169,7 +172,7 @@ The full pipeline does not auto-open the viewer anymore. Viewing is a separate s
 
 ## Viewer Controls
 
-The viewer loads the PLY file, applies a vertical coordinate correction, normalizes the cloud to fit the scene, and shows an overlay with point count, color mode, point size, grid state, flip state, and the loaded file path.
+The viewer renders the point cloud using `GL_POINTS` to prevent "spiky" triangle artifacts. It supports robust normalization and large models up to 10,000 units from the origin.
 
 - right mouse drag: rotate
 - mouse wheel: move forward/backward
@@ -196,13 +199,13 @@ If you launch `viewer.exe` without an argument, it tries a small set of default 
 `config.json` is now aligned with the active pipeline:
 
 - output path: `data/dense/0/fused.ply`
-- matcher: `sequential_matcher`
-- max image size: `1200`
+- matcher: `exhaustive_matcher`
+- max image size: `2000`
 - COLMAP executable: `colmap_bin/COLMAP-3.9.1-windows-cuda/COLMAP.bat`
 
 The code still hardcodes a few runtime values instead of reading every setting from config:
 
-- extraction uses fixed `fps=4`
+- extraction uses fixed `fps=2`
 - `scripts/run_colmap.py` hardcodes several COLMAP tuning flags listed above
 - `run_pipeline.ps1` adds a machine-specific FFmpeg path when it exists locally
 
