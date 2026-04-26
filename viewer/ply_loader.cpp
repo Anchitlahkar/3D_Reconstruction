@@ -3,9 +3,12 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -13,9 +16,34 @@
 
 namespace {
 
+enum class PlyFormat {
+    kUnknown,
+    kAscii,
+    kBinaryLittleEndian,
+};
+
 struct PropertyInfo {
     std::string type;
     std::string name;
+    int size = 0;
+};
+
+struct VertexLayout {
+    int xIndex = -1;
+    int yIndex = -1;
+    int zIndex = -1;
+    int nxIndex = -1;
+    int nyIndex = -1;
+    int nzIndex = -1;
+    int rIndex = -1;
+    int gIndex = -1;
+    int bIndex = -1;
+};
+
+struct PlyHeader {
+    PlyFormat format = PlyFormat::kUnknown;
+    std::size_t vertexCount = 0;
+    std::vector<PropertyInfo> vertexProperties;
 };
 
 std::string ToLower(std::string value) {
@@ -29,20 +57,6 @@ void TrimTrailingCarriageReturn(std::string& value) {
     if (!value.empty() && value.back() == '\r') {
         value.pop_back();
     }
-}
-
-int FindPropertyIndex(const std::vector<PropertyInfo>& properties, const std::string& name) {
-    for (int index = 0; index < static_cast<int>(properties.size()); ++index) {
-        if (properties[index].name == name) {
-            return index;
-        }
-    }
-    return -1;
-}
-
-unsigned char ClampColor(double value) {
-    value = std::clamp(value, 0.0, 255.0);
-    return static_cast<unsigned char>(value);
 }
 
 int PropertySize(const std::string& type) {
@@ -61,91 +75,247 @@ int PropertySize(const std::string& type) {
     throw std::runtime_error("Unsupported PLY property type: " + type);
 }
 
-double ReadBinaryValue(std::ifstream& file, const std::string& type) {
-    std::array<unsigned char, 8> bytes = {};
-    const int byteCount = PropertySize(type);
-    file.read(reinterpret_cast<char*>(bytes.data()), byteCount);
+std::string FormatToString(PlyFormat format) {
+    switch (format) {
+    case PlyFormat::kAscii:
+        return "ascii";
+    case PlyFormat::kBinaryLittleEndian:
+        return "binary_little_endian";
+    default:
+        return "unknown";
+    }
+}
+
+int FindPropertyIndex(const std::vector<PropertyInfo>& properties, const std::initializer_list<std::string>& names) {
+    for (const std::string& candidate : names) {
+        for (int index = 0; index < static_cast<int>(properties.size()); ++index) {
+            if (properties[static_cast<std::size_t>(index)].name == candidate) {
+                return index;
+            }
+        }
+    }
+    return -1;
+}
+
+VertexLayout BuildVertexLayout(const std::vector<PropertyInfo>& properties) {
+    VertexLayout layout = {};
+    layout.xIndex = FindPropertyIndex(properties, {"x"});
+    layout.yIndex = FindPropertyIndex(properties, {"y"});
+    layout.zIndex = FindPropertyIndex(properties, {"z"});
+    layout.nxIndex = FindPropertyIndex(properties, {"nx", "normal_x"});
+    layout.nyIndex = FindPropertyIndex(properties, {"ny", "normal_y"});
+    layout.nzIndex = FindPropertyIndex(properties, {"nz", "normal_z"});
+    layout.rIndex = FindPropertyIndex(properties, {"red", "r", "diffuse_red"});
+    layout.gIndex = FindPropertyIndex(properties, {"green", "g", "diffuse_green"});
+    layout.bIndex = FindPropertyIndex(properties, {"blue", "b", "diffuse_blue"});
+    return layout;
+}
+
+unsigned char ClampColor(double value) {
+    value = std::clamp(value, 0.0, 255.0);
+    return static_cast<unsigned char>(std::lround(value));
+}
+
+template <typename T>
+T ReadLittleEndian(std::ifstream& file) {
+    std::array<unsigned char, sizeof(T)> bytes = {};
+    file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     if (!file) {
         throw std::runtime_error("Unexpected end of file while reading binary PLY data.");
     }
 
-    if (type == "float" || type == "float32") {
-        std::uint32_t raw = 0;
-        for (int i = 0; i < 4; ++i) {
-            raw |= static_cast<std::uint32_t>(bytes[static_cast<std::size_t>(i)]) << (8 * i);
-        }
-        float value = 0.0f;
-        std::memcpy(&value, &raw, sizeof(value));
-        return value;
+    T value{};
+    unsigned char* out = reinterpret_cast<unsigned char*>(&value);
+    for (std::size_t i = 0; i < bytes.size(); ++i) {
+        out[i] = bytes[i];
     }
+    return value;
+}
 
-    if (type == "double" || type == "float64") {
-        std::uint64_t raw = 0;
-        for (int i = 0; i < 8; ++i) {
-            raw |= static_cast<std::uint64_t>(bytes[static_cast<std::size_t>(i)]) << (8 * i);
-        }
-        double value = 0.0;
-        std::memcpy(&value, &raw, sizeof(value));
-        return value;
-    }
+double ReadBinaryScalar(std::ifstream& file, const std::string& type) {
+    if (type == "char" || type == "int8") return static_cast<double>(ReadLittleEndian<std::int8_t>(file));
+    if (type == "uchar" || type == "uint8") return static_cast<double>(ReadLittleEndian<std::uint8_t>(file));
+    if (type == "short" || type == "int16") return static_cast<double>(ReadLittleEndian<std::int16_t>(file));
+    if (type == "ushort" || type == "uint16") return static_cast<double>(ReadLittleEndian<std::uint16_t>(file));
+    if (type == "int" || type == "int32") return static_cast<double>(ReadLittleEndian<std::int32_t>(file));
+    if (type == "uint" || type == "uint32") return static_cast<double>(ReadLittleEndian<std::uint32_t>(file));
+    if (type == "int64") return static_cast<double>(ReadLittleEndian<std::int64_t>(file));
+    if (type == "uint64") return static_cast<double>(ReadLittleEndian<std::uint64_t>(file));
+    if (type == "float" || type == "float32") return static_cast<double>(ReadLittleEndian<float>(file));
+    if (type == "double" || type == "float64") return ReadLittleEndian<double>(file);
+    throw std::runtime_error("Unsupported binary PLY property type: " + type);
+}
 
-    auto readUnsigned = [&](int bits) -> std::uint64_t {
-        std::uint64_t raw = 0;
-        for (int i = 0; i < bits / 8; ++i) {
-            raw |= static_cast<std::uint64_t>(bytes[static_cast<std::size_t>(i)]) << (8 * i);
-        }
-        return raw;
+Point MapPoint(const std::vector<double>& values, const VertexLayout& layout) {
+    Point point = {};
+    point.x = static_cast<float>(values[static_cast<std::size_t>(layout.xIndex)]);
+    point.y = static_cast<float>(values[static_cast<std::size_t>(layout.yIndex)]);
+    point.z = static_cast<float>(values[static_cast<std::size_t>(layout.zIndex)]);
+    point.r = layout.rIndex >= 0 ? ClampColor(values[static_cast<std::size_t>(layout.rIndex)]) : 255;
+    point.g = layout.gIndex >= 0 ? ClampColor(values[static_cast<std::size_t>(layout.gIndex)]) : 255;
+    point.b = layout.bIndex >= 0 ? ClampColor(values[static_cast<std::size_t>(layout.bIndex)]) : 255;
+    return point;
+}
+
+void ValidatePoint(const Point& point, std::size_t index) {
+    const auto validCoordinate = [](float value) {
+        return std::isfinite(value) && value >= -10000.0f && value <= 10000.0f;
     };
 
-    if (type == "uchar" || type == "uint8") return static_cast<double>(bytes[0]);
-    if (type == "char" || type == "int8") return static_cast<double>(static_cast<std::int8_t>(bytes[0]));
-    if (type == "ushort" || type == "uint16") return static_cast<double>(readUnsigned(16));
-    if (type == "short" || type == "int16") return static_cast<double>(static_cast<std::int16_t>(readUnsigned(16)));
-    if (type == "uint" || type == "uint32") return static_cast<double>(readUnsigned(32));
-    if (type == "int" || type == "int32") return static_cast<double>(static_cast<std::int32_t>(readUnsigned(32)));
-    if (type == "uint64") return static_cast<double>(readUnsigned(64));
-    if (type == "int64") return static_cast<double>(static_cast<std::int64_t>(readUnsigned(64)));
+    if (!validCoordinate(point.x) || !validCoordinate(point.y) || !validCoordinate(point.z)) {
+        std::ostringstream message;
+        message << "PLY format mismatch - check property layout. "
+                << "Invalid point at vertex " << index
+                << ": (" << point.x << ", " << point.y << ", " << point.z << ")";
+        throw std::runtime_error(message.str());
+    }
+}
 
-    throw std::runtime_error("Unsupported binary PLY property type: " + type);
+void ValidateEarlyPoints(const std::vector<Point>& points) {
+    const std::size_t sampleCount = std::min<std::size_t>(5, points.size());
+    for (std::size_t index = 0; index < sampleCount; ++index) {
+        ValidatePoint(points[index], index);
+    }
+}
+
+void PrintDebugSummary(const PlyHeader& header) {
+    std::cout << "PLY Loaded:\n";
+    std::cout << "format: " << FormatToString(header.format) << '\n';
+    std::cout << "vertices: " << header.vertexCount << '\n';
+    std::cout << "properties:";
+    for (const PropertyInfo& property : header.vertexProperties) {
+        std::cout << ' ' << property.name;
+    }
+    std::cout << '\n';
+}
+
+PlyHeader ParseHeader(std::ifstream& file, const std::string& path) {
+    PlyHeader headerInfo = {};
+    bool insideVertexElement = false;
+    bool sawEndHeader = false;
+
+    std::string line;
+    if (!std::getline(file, line)) {
+        throw std::runtime_error("Empty PLY file: " + path);
+    }
+    TrimTrailingCarriageReturn(line);
+    if (line != "ply") {
+        throw std::runtime_error("Input is not a PLY file: " + path);
+    }
+
+    while (std::getline(file, line)) {
+        TrimTrailingCarriageReturn(line);
+        if (line == "end_header") {
+            sawEndHeader = true;
+            break;
+        }
+        if (line.empty()) {
+            continue;
+        }
+
+        std::istringstream headerLine(line);
+        std::string token;
+        headerLine >> token;
+        token = ToLower(token);
+
+        if (token == "comment" || token == "obj_info") {
+            continue;
+        }
+
+        if (token == "format") {
+            std::string formatName;
+            std::string version;
+            headerLine >> formatName >> version;
+            formatName = ToLower(formatName);
+            if (formatName == "ascii") {
+                headerInfo.format = PlyFormat::kAscii;
+            } else if (formatName == "binary_little_endian") {
+                headerInfo.format = PlyFormat::kBinaryLittleEndian;
+            } else {
+                throw std::runtime_error("Only ASCII and binary_little_endian PLY files are supported.");
+            }
+            continue;
+        }
+
+        if (token == "element") {
+            std::string elementName;
+            std::size_t count = 0;
+            headerLine >> elementName >> count;
+            elementName = ToLower(elementName);
+            insideVertexElement = elementName == "vertex";
+            if (insideVertexElement) {
+                headerInfo.vertexCount = count;
+                headerInfo.vertexProperties.clear();
+            }
+            continue;
+        }
+
+        if (token == "property" && insideVertexElement) {
+            std::string type;
+            headerLine >> type;
+            type = ToLower(type);
+
+            if (type == "list") {
+                throw std::runtime_error("PLY vertex list properties are not supported.");
+            }
+
+            std::string name;
+            headerLine >> name;
+            name = ToLower(name);
+            if (name.empty()) {
+                throw std::runtime_error("Malformed PLY property definition.");
+            }
+
+            headerInfo.vertexProperties.push_back({type, name, PropertySize(type)});
+        }
+    }
+
+    if (!sawEndHeader) {
+        throw std::runtime_error("PLY header is missing end_header.");
+    }
+
+    if (headerInfo.vertexCount == 0) {
+        throw std::runtime_error("PLY file does not define any vertices.");
+    }
+
+    if (headerInfo.vertexProperties.empty()) {
+        throw std::runtime_error("PLY vertex element does not define any scalar properties.");
+    }
+
+    return headerInfo;
 }
 
 std::vector<Point> LoadAsciiVertices(
     std::ifstream& file,
-    int vertexCount,
-    const std::vector<PropertyInfo>& properties,
-    int xIndex,
-    int yIndex,
-    int zIndex,
-    int rIndex,
-    int gIndex,
-    int bIndex
+    const PlyHeader& header,
+    const VertexLayout& layout
 ) {
     std::vector<Point> points;
-    points.reserve(static_cast<std::size_t>(vertexCount));
+    points.reserve(header.vertexCount);
 
-    std::vector<double> values(properties.size(), 0.0);
+    std::vector<double> values(header.vertexProperties.size(), 0.0);
     std::string line;
-    while (static_cast<int>(points.size()) < vertexCount && std::getline(file, line)) {
+    while (points.size() < header.vertexCount && std::getline(file, line)) {
         TrimTrailingCarriageReturn(line);
         if (line.empty()) {
             continue;
         }
 
         std::istringstream row(line);
-        for (double& value : values) {
-            if (!(row >> value)) {
+        for (std::size_t propertyIndex = 0; propertyIndex < header.vertexProperties.size(); ++propertyIndex) {
+            if (!(row >> values[propertyIndex])) {
                 throw std::runtime_error("Failed to parse ASCII PLY vertex row.");
             }
         }
 
-        Point point = {};
-        point.x = static_cast<float>(values[static_cast<std::size_t>(xIndex)]);
-        point.y = static_cast<float>(values[static_cast<std::size_t>(yIndex)]);
-        point.z = static_cast<float>(values[static_cast<std::size_t>(zIndex)]);
-        point.r = rIndex >= 0 ? ClampColor(values[static_cast<std::size_t>(rIndex)]) : 255;
-        point.g = gIndex >= 0 ? ClampColor(values[static_cast<std::size_t>(gIndex)]) : 255;
-        point.b = bIndex >= 0 ? ClampColor(values[static_cast<std::size_t>(bIndex)]) : 255;
-        points.push_back(point);
+        points.push_back(MapPoint(values, layout));
+        if (points.size() <= 5) {
+            ValidatePoint(points.back(), points.size() - 1);
+        }
+    }
+
+    if (points.size() != header.vertexCount) {
+        throw std::runtime_error("PLY vertex count does not match ASCII payload.");
     }
 
     return points;
@@ -153,32 +323,22 @@ std::vector<Point> LoadAsciiVertices(
 
 std::vector<Point> LoadBinaryVertices(
     std::ifstream& file,
-    int vertexCount,
-    const std::vector<PropertyInfo>& properties,
-    int xIndex,
-    int yIndex,
-    int zIndex,
-    int rIndex,
-    int gIndex,
-    int bIndex
+    const PlyHeader& header,
+    const VertexLayout& layout
 ) {
     std::vector<Point> points;
-    points.reserve(static_cast<std::size_t>(vertexCount));
+    points.reserve(header.vertexCount);
 
-    std::vector<double> values(properties.size(), 0.0);
-    for (int vertex = 0; vertex < vertexCount; ++vertex) {
-        for (int property = 0; property < static_cast<int>(properties.size()); ++property) {
-            values[static_cast<std::size_t>(property)] = ReadBinaryValue(file, properties[static_cast<std::size_t>(property)].type);
+    std::vector<double> values(header.vertexProperties.size(), 0.0);
+    for (std::size_t vertexIndex = 0; vertexIndex < header.vertexCount; ++vertexIndex) {
+        for (std::size_t propertyIndex = 0; propertyIndex < header.vertexProperties.size(); ++propertyIndex) {
+            values[propertyIndex] = ReadBinaryScalar(file, header.vertexProperties[propertyIndex].type);
         }
 
-        Point point = {};
-        point.x = static_cast<float>(values[static_cast<std::size_t>(xIndex)]);
-        point.y = static_cast<float>(values[static_cast<std::size_t>(yIndex)]);
-        point.z = static_cast<float>(values[static_cast<std::size_t>(zIndex)]);
-        point.r = rIndex >= 0 ? ClampColor(values[static_cast<std::size_t>(rIndex)]) : 255;
-        point.g = gIndex >= 0 ? ClampColor(values[static_cast<std::size_t>(gIndex)]) : 255;
-        point.b = bIndex >= 0 ? ClampColor(values[static_cast<std::size_t>(bIndex)]) : 255;
-        points.push_back(point);
+        points.push_back(MapPoint(values, layout));
+        if (points.size() <= 5) {
+            ValidatePoint(points.back(), points.size() - 1);
+        }
     }
 
     return points;
@@ -192,92 +352,26 @@ std::vector<Point> LoadPLY(const std::string& path) {
         throw std::runtime_error("Could not open PLY file: " + path);
     }
 
-    std::string line;
-    std::getline(file, line);
-    TrimTrailingCarriageReturn(line);
-    if (line != "ply") {
-        throw std::runtime_error("Input is not a PLY file: " + path);
-    }
+    std::array<char, 1 << 16> readBuffer = {};
+    file.rdbuf()->pubsetbuf(readBuffer.data(), static_cast<std::streamsize>(readBuffer.size()));
 
-    bool asciiFormat = false;
-    bool binaryLittleEndian = false;
-    int vertexCount = 0;
-    bool readingVertexProperties = false;
-    std::vector<PropertyInfo> properties;
+    const PlyHeader header = ParseHeader(file, path);
+    const VertexLayout layout = BuildVertexLayout(header.vertexProperties);
 
-    while (std::getline(file, line)) {
-        TrimTrailingCarriageReturn(line);
-        if (line == "end_header") {
-            break;
-        }
-
-        std::istringstream header(line);
-        std::string token;
-        header >> token;
-        token = ToLower(token);
-
-        if (token == "format") {
-            std::string format;
-            header >> format;
-            format = ToLower(format);
-            asciiFormat = format == "ascii";
-            binaryLittleEndian = format == "binary_little_endian";
-        } else if (token == "element") {
-            std::string elementName;
-            header >> elementName;
-            elementName = ToLower(elementName);
-            readingVertexProperties = elementName == "vertex";
-            if (readingVertexProperties) {
-                header >> vertexCount;
-                properties.clear();
-            }
-        } else if (token == "property" && readingVertexProperties) {
-            std::string type;
-            header >> type;
-            type = ToLower(type);
-
-            if (type == "list") {
-                std::string countType;
-                std::string itemType;
-                std::string name;
-                header >> countType >> itemType >> name;
-                continue;
-            }
-
-            std::string name;
-            header >> name;
-            properties.push_back({type, ToLower(name)});
-        }
-    }
-
-    if (!asciiFormat && !binaryLittleEndian) {
-        throw std::runtime_error("Only ASCII and binary_little_endian PLY files are supported.");
-    }
-    if (vertexCount <= 0) {
-        throw std::runtime_error("PLY file does not define any vertices.");
-    }
-
-    const int xIndex = FindPropertyIndex(properties, "x");
-    const int yIndex = FindPropertyIndex(properties, "y");
-    const int zIndex = FindPropertyIndex(properties, "z");
-    if (xIndex < 0 || yIndex < 0 || zIndex < 0) {
+    if (layout.xIndex < 0 || layout.yIndex < 0 || layout.zIndex < 0) {
         throw std::runtime_error("PLY vertex data must include x, y, and z properties.");
     }
 
-    int rIndex = FindPropertyIndex(properties, "red");
-    int gIndex = FindPropertyIndex(properties, "green");
-    int bIndex = FindPropertyIndex(properties, "blue");
-    if (rIndex < 0) rIndex = FindPropertyIndex(properties, "r");
-    if (gIndex < 0) gIndex = FindPropertyIndex(properties, "g");
-    if (bIndex < 0) bIndex = FindPropertyIndex(properties, "b");
+    PrintDebugSummary(header);
 
-    std::vector<Point> points = asciiFormat
-        ? LoadAsciiVertices(file, vertexCount, properties, xIndex, yIndex, zIndex, rIndex, gIndex, bIndex)
-        : LoadBinaryVertices(file, vertexCount, properties, xIndex, yIndex, zIndex, rIndex, gIndex, bIndex);
+    std::vector<Point> points = header.format == PlyFormat::kAscii
+        ? LoadAsciiVertices(file, header, layout)
+        : LoadBinaryVertices(file, header, layout);
 
     if (points.empty()) {
         throw std::runtime_error("PLY file did not yield any readable points.");
     }
 
+    ValidateEarlyPoints(points);
     return points;
 }

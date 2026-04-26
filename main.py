@@ -96,7 +96,7 @@ def main():
     print("[1/2] Extracting frames")
     run_python_script(
         PROJECT_ROOT / "scripts" / "extract_frames.py",
-        ["--video", str(video_path), "--output-dir", str(image_dir)],
+        ["--video", str(video_path), "--output-dir", str(image_dir), "--config", str(Path(args.config).resolve())],
     )
 
     print("[2/2] Running reconstruction")

@@ -145,11 +145,15 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
                 "--SiftExtraction.use_gpu",
                 gpu_flag,
                 "--SiftExtraction.max_num_features",
-                "12000",
+                "8192",
                 "--SiftExtraction.estimate_affine_shape",
                 "1",
                 "--SiftExtraction.domain_size_pooling",
                 "1",
+                "--SiftExtraction.contrast_threshold",
+                "0.01",
+                "--SiftExtraction.edge_threshold",
+                "10",
             ],
         ),
         (
@@ -164,7 +168,7 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
                 "--SiftMatching.guided_matching",
                 "1",
                 "--SiftMatching.max_num_matches",
-                "32768",
+                "65536",
             ],
         ),
         (
@@ -181,7 +185,11 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
                 "--Mapper.num_threads",
                 "8",
                 "--Mapper.init_min_tri_angle",
-                "1",
+                "8.0",
+                "--Mapper.tri_min_angle",
+                "5.0",
+                "--Mapper.filter_min_num_observations",
+                "3",
                 "--Mapper.multiple_models",
                 "1",
                 "--Mapper.extract_colors",
@@ -222,7 +230,7 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
                 "--output_type",
                 "COLMAP",
                 "--max_image_size",
-                "1200",
+                str(options.get("max_image_size", 2000)),
             ], log_file)
             
             # Dense stereo step
@@ -236,9 +244,11 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
                 "--PatchMatchStereo.geom_consistency",
                 "1",
                 "--PatchMatchStereo.num_iterations",
-                "3",
+                "5",
                 "--PatchMatchStereo.window_radius",
-                "4",
+                "5",
+                "--PatchMatchStereo.filter_min_num_consistent",
+                "5",
                 "--PatchMatchStereo.gpu_index",
                 gpu_index,
             ], log_file)
@@ -256,7 +266,9 @@ def run_colmap(image_dir, sparse_dir, dense_dir, database_path, options, log_pat
                 "--output_path",
                 str(fused_ply),
                 "--StereoFusion.min_num_pixels",
-                "3",
+                "8",
+                "--StereoFusion.max_reproj_error",
+                "1.0",
             ], log_file)
 
             runtime = time.time() - start_time

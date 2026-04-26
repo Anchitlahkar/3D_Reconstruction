@@ -1,5 +1,5 @@
 {
-  "fps": 4,
+  "fps": 2,
   "paths": {
     "input_video_dir": "data/input_video",
     "image_dir": "data/images",
@@ -13,7 +13,7 @@
     "use_gpu": true,
     "camera_model": "SIMPLE_RADIAL",
     "single_camera": true,
-    "matcher": "sequential_matcher",
-    "max_image_size": 1200
+    "matcher": "exhaustive_matcher",
+    "max_image_size": 2000
   }
 }

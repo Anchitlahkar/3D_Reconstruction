@@ -5,11 +5,11 @@ import subprocess
 import sys
 
 
-FPS = 4
-MAX_WIDTH = 1200
+FPS = 2
+MAX_WIDTH = 2000
 
 
-def extract_frames(video_path, image_dir):
+def extract_frames(video_path, image_dir, fps=FPS, max_width=MAX_WIDTH):
     """Extract all video viewpoints at a fixed FPS for room-scale reconstruction."""
     video_path = Path(video_path).resolve()
     image_dir = Path(image_dir).resolve()
@@ -26,7 +26,7 @@ def extract_frames(video_path, image_dir):
         image_file.unlink()
 
     output_pattern = image_dir / "frame_%04d.jpg"
-    scale_filter = f"fps={FPS},scale='min({MAX_WIDTH},iw)':-1"
+    scale_filter = f"fps={fps},scale='min({max_width},iw)':-1"
     command = [
         ffmpeg_path,
         "-y",
@@ -54,9 +54,22 @@ def main():
     parser = argparse.ArgumentParser(description="Extract frames from a video for room-scale COLMAP reconstruction.")
     parser.add_argument("--video", required=True, help="Path to the input video.")
     parser.add_argument("--output-dir", required=True, help="Directory for extracted frames.")
+    parser.add_argument("--config", help="Path to config.json to load FPS and MAX_WIDTH.")
     args = parser.parse_args()
 
-    extract_frames(args.video, args.output_dir)
+    fps = FPS
+    max_width = MAX_WIDTH
+
+    if args.config:
+        config_path = Path(args.config)
+        if config_path.exists():
+            import json
+            with open(config_path, "r") as f:
+                config = json.load(f)
+                fps = config.get("fps", FPS)
+                max_width = config.get("colmap", {}).get("max_image_size", MAX_WIDTH)
+
+    extract_frames(args.video, args.output_dir, fps, max_width)
 
 
 if __name__ == "__main__":
