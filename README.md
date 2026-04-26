@@ -1,4 +1,4 @@
-# 3D Reconstruction
+# Frame2Scene 
 
 Windows-first photogrammetry pipeline that turns a video into a dense COLMAP point cloud and opens it in a custom Raylib viewer.
 
