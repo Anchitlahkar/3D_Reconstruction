@@ -1,252 +1,154 @@
-# Frame2Scene 
+# Frame2Scene
 
-Windows-first photogrammetry pipeline that turns a video into a dense COLMAP point cloud and opens it in a custom Raylib viewer.
+**Frame2Scene** is a high-performance, Windows-optimized photogrammetry pipeline that converts video footage into dense 3D point clouds using COLMAP and a custom high-performance Raylib viewer. It features adaptive frame selection, a multi-level resource-aware reconstruction fallback system, and real-time performance monitoring.
 
-The current flow is:
+## Pipeline Architecture
+
+The pipeline follows a structured flow designed for robustness and quality:
 
 ```text
-video -> frame extraction -> COLMAP -> fused.ply -> viewer
+Input Video -> Adaptive Extraction -> Sparse Reconstruction -> Dense Fallback Logic -> Fusion -> Custom Viewer
 ```
 
-## Features
+### 1. Adaptive Frame Extraction (`scripts/extract_frames.py`)
+Instead of simple periodic sampling, Frame2Scene uses a multi-stage analysis to ensure the best possible input for COLMAP:
+- **Raw Extraction**: FFmpeg extracts frames at a base FPS (default 5).
+- **Sharpness Filtering**: Uses Laplacian variance to reject motion-blurred frames.
+- **Motion & Content Analysis**:
+    - **Histogram Difference**: Detects significant scene changes.
+    - **Optical Flow (Farneback)**: Measures camera movement to ensure sufficient parallax without redundancy.
+    - **Feature Change Ratio**: Tracks corner distribution changes using `goodFeaturesToTrack`.
+- **Adaptive Selection**: Keeps frames only if they meet motion/content thresholds or to prevent excessive gaps (max 3 frames).
+- **Target Optimization**: Aims for a target range (default 150-220 frames) for optimal reconstruction time vs. quality.
 
-- extracts frames from a source video with `ffmpeg`
-- runs sparse and dense reconstruction with COLMAP
-- logs progress to `logs/colmap.log`
-- shows a live terminal progress monitor
-- opens the final `.ply` in a native C++ viewer
+### 2. Monitored COLMAP Reconstruction (`scripts/run_colmap.py`)
+A robust wrapper around COLMAP that implements automated error recovery and resource management:
+- **Sift Features**: Uses GPU-accelerated extraction with affine shape estimation and domain size pooling.
+- **Flexible Matching**: Supports `exhaustive_matcher` for objects and `sequential_matcher` (with loop detection) for paths/rooms.
+- **Intelligent Fallback System**: If dense reconstruction fails (often due to VRAM/RAM limits), the pipeline automatically retries with progressively safer configurations:
+    - **Level 0**: Original config (e.g., 2304px).
+    - **Level 1**: Reduced resolution (1920px).
+    - **Level 2**: Lower resolution (1600px) + reduced PatchMatch iterations.
+    - **Level 3**: Strict frame count enforcement (max 180 frames) + minimum resolution.
+- **Resource Guard**: Pre-emptively checks VRAM/RAM availability before the dense stage using `nvidia-smi` and Win32 APIs.
+
+### 3. Pipeline Monitor & Analytics (`scripts/monitor.py`)
+A real-time dashboard and logging system providing deep visibility into the process:
+- **Metrics**: Tracks CPU (per-core), GPU utilization, VRAM, System RAM, and Disk I/O.
+- **Alert System**: Detects and logs CPU throttling, memory pressure, and GPU underutilization during the dense stage.
+- **Performance Scoring**: Calculates an efficiency score (0-100) based on GPU busy-time, runtime, and frames processed.
+- **Comparative Analysis**: Compares the current run against previous sessions to detect regressions in speed or quality.
+
+### 4. Custom 3D Viewer (`viewer/`)
+A high-performance C++ application built with Raylib for inspecting large point clouds:
+- **PCA Alignment**: Automatically centers the cloud and optionally rotates the principal axis to align with the world grid.
+- **Robust Normalization**: Uses quantile-based (0.5% - 99.5%) scaling to eliminate "outlier" points that often break standard normalization.
+- **Point-Cloud Rendering**: Uses `GL_POINTS` with custom shaders for clean visualization of millions of points.
+- **Orientation Correction**: Supports manual Y-axis flipping to correct upside-down reconstructions.
+
+---
 
 ## Project Structure
 
 ```text
 3D_Reconstruction/
-|-- main.py
-|-- run_pipeline.ps1
-|-- view_existing_model.ps1
-|-- config.json
-|-- requirements.txt
-|-- working.md
-|-- scripts/
-|   |-- extract_frames.py
-|   |-- run_colmap.py
-|   `-- progress_monitor.py
-|-- viewer/
-|   `-- main.cpp
-|-- data/
-|   |-- input_video/
-|   |-- images/
-|   |-- sparse/
-|   `-- dense/
-|       `-- 0/
-|           `-- fused.ply
-|-- logs/
-|   `-- colmap.log
-|-- colmap_bin/
-`-- raylib/
+├── main.py                     # Primary orchestration layer
+├── pipeline_runner.py          # Internal pipeline logic and monitoring integration
+├── run_pipeline.ps1            # Windows entry point for full reconstruction
+├── view_existing_model.ps1     # Quick entry point for the viewer
+├── config.json                 # Central configuration for all stages
+├── requirements.txt            # Python dependencies (tqdm, psutil, rich, opencv, pynvml)
+├── scripts/
+│   ├── extract_frames.py       # Adaptive frame selection logic
+│   ├── run_colmap.py           # COLMAP runner with fallback logic
+│   ├── monitor.py              # Performance monitoring engine
+│   ├── resource_guard.py       # Hardware checks and dataset manipulation
+│   └── progress_monitor.py     # Simple terminal progress tracker
+├── viewer/
+│   ├── main.cpp                # Viewer entry point and rendering logic
+│   ├── ply_loader.cpp          # Optimized ASCII/Binary PLY loader
+│   ├── alignment.cpp           # PCA and normalization math
+│   └── viewer.exe              # Pre-compiled Windows binary
+├── data/                       # Workspace for images, database, and models
+├── logs/                       # Detailed logs and performance metrics
+├── colmap_bin/                 # COLMAP binaries (CUDA enabled)
+└── raylib/                     # Raylib development files
 ```
+
+---
 
 ## Requirements
 
-- Windows
-- Python 3.10+
-- COLMAP available through `config.json` or PATH
-- FFmpeg available on PATH
-- a C++ toolchain with `g++` if you want to rebuild the viewer
-- Raylib files under `raylib/raylib-5.5_win64_mingw-w64/`
+- **OS**: Windows 10/11
+- **GPU**: NVIDIA GPU (CUDA support required for COLMAP)
+- **Python**: 3.10+
+- **Tools**: `ffmpeg` (must be in PATH)
 
-Python dependencies used by the active scripts:
+---
 
-- `tqdm`
-- `psutil`
+## Configuration (`config.json`)
 
-## Setup
+Key parameters in `config.json`:
 
-Create or activate a virtual environment, then install the Python dependencies:
+- **`fps`**: Base extraction rate (default: 5).
+- **`frame_selection`**:
+    - `min_sharpness`: Reject blurry frames (default: 80.0).
+    - `min_flow_magnitude`: Min motion required (default: 1.5).
+    - `target_max_frames`: Soft cap for reconstruction speed (default: 220).
+- **`colmap`**:
+    - `max_image_size`: Resolution for reconstruction (default: 2304).
+    - `matcher`: `sequential_matcher` or `exhaustive_matcher`.
+    - `patch_match_stereo`: Tuning for dense quality (iterations, window size).
 
-```powershell
-.\venv\Scripts\python.exe -m pip install -r .\requirements.txt
-```
-
-Check these paths before your first run:
-
-- `config.json`
-- `colmap_bin/COLMAP-3.9.1-windows-cuda/`
-- `raylib/raylib-5.5_win64_mingw-w64/`
-
-## Quick Start
-
-Run the full pipeline from the terminal with:
-
-```powershell
-.\run_pipeline.ps1 --video .\path\to\input.mp4
-```
-
-If `--video` is omitted, `main.py` uses the first supported video it finds in `data/input_video/`.
-
-Open an existing reconstruction from the terminal with:
-
-```powershell
-.\view_existing_model.ps1
-```
+---
 
 ## Usage
 
-Recommended terminal commands:
+### 1. Run the Full Pipeline
+Provide a video file and let the pipeline handle the rest:
 
 ```powershell
-.\run_pipeline.ps1 --video .\path\to\input.mp4
+.\run_pipeline.ps1 --video "C:\videos\room_scan.mp4"
+```
+
+### 2. View Existing Model
+Instantly open the latest `fused.ply`:
+
+```powershell
 .\view_existing_model.ps1
 ```
 
-Direct Python entry point:
+### 3. Dry Run
+Test the setup with a small subset (20 frames) of images:
 
 ```powershell
-.\venv\Scripts\python.exe .\main.py --video .\path\to\input.mp4
-.\venv\Scripts\python.exe .\main.py --config .\config.json
+.\venv\Scripts\python.exe main.py --video "input.mp4" --dry-run
 ```
 
-Use `main.py` directly only if you want to bypass the PowerShell wrapper.
-
-## Pipeline Stages
-
-### 1. Frame Extraction
-
-`scripts/extract_frames.py`:
-
-- extracts JPG frames into `data/images/`
-- uses fixed `fps=2` (optimized for better parallax)
-- downscales frames to max width `2000`
-- clears old JPG frames in the output folder before writing new ones
-
-### 2. COLMAP Reconstruction
-
-`scripts/run_colmap.py`:
-
-- clears previous reconstruction artifacts
-- uses `exhaustive_matcher` for better loop closure on objects
-- runs feature extraction, matching, mapping, undistortion, dense stereo, and fusion
-- logs every stage to `logs/colmap.log`
-- writes the final output to `data/dense/0/fused.ply`
-
-Current COLMAP behavior:
-
-- `ImageReader.single_camera=1`
-- `SiftExtraction.max_num_features=8192`
-- `SiftExtraction.contrast_threshold=0.01`
-- `SiftExtraction.edge_threshold=10`
-- `image_undistorter --max_image_size 2000`
-- `Mapper.init_min_tri_angle=8.0` (prevents depth uncertainty spikes)
-- `PatchMatchStereo.geom_consistency=1`
-- `PatchMatchStereo.num_iterations=5`
-- `PatchMatchStereo.window_radius=5`
-- `StereoFusion.min_num_pixels=8` (aggressive noise filtering)
-- `StereoFusion.max_reproj_error=1.0`
-
-### 3. Progress Monitoring
-
-`scripts/progress_monitor.py`:
-
-- tails `logs/colmap.log`
-- tracks feature, match, mapping, dense, and fusion progress
-- exits when `data/dense/0/fused.ply` appears, the pipeline PID exits, or an error is logged
-
-### 4. Viewing
-
-`.\view_existing_model.ps1` is the recommended viewer entry point.
-
-It:
-
-- checks that `data/dense/0/fused.ply` exists
-- checks that `viewer/viewer.exe` exists
-- launches the viewer with the reconstructed `.ply` path
-
-The full pipeline does not auto-open the viewer anymore. Viewing is a separate step.
-
-## Outputs
-
-- final point cloud: `data/dense/0/fused.ply`
-- COLMAP database: `data/database.db`
-- sparse model: `data/sparse/`
-- dense workspace: `data/dense/`
-- log file: `logs/colmap.log`
+---
 
 ## Viewer Controls
 
-The viewer renders the point cloud using `GL_POINTS` to prevent "spiky" triangle artifacts. It supports robust normalization and large models up to 10,000 units from the origin.
+| Key | Action |
+|-----|--------|
+| **RMB + Drag** | Rotate Camera |
+| **W, A, S, D** | Movement |
+| **Q / E** | Move Up / Down |
+| **Mouse Wheel** | Zoom In / Out |
+| **Shift** | Move Faster |
+| **F** | Flip Y-Axis (Correction) |
+| **U** | Toggle PCA Rotation Alignment |
+| **N** | Toggle Robust Normalization |
+| **G** | Toggle Grid |
+| **R** | Reset Camera |
+| **+/-** | Adjust Point Size |
+| **F11** | Fullscreen |
 
-- right mouse drag: rotate
-- mouse wheel: move forward/backward
-- `W`, `A`, `S`, `D`: move
-- `Q`: move up
-- `E`: move down
-- `Shift`: move faster
-- `F`: flip vertical orientation (fix upside-down models)
-- `G`: toggle grid
-- `V`: toggle density mode
-- `R`: reset camera
-- `U`: rerun PCA alignment (resets flip)
-
-Direct viewer launch:
-
-```powershell
-.\viewer\viewer.exe .\data\dense\0\fused.ply
-```
-
-If you launch `viewer.exe` without an argument, it tries a small set of default PLY paths and prefers `data/dense/0/fused.ply` when found.
-
-## Configuration Notes
-
-`config.json` is now aligned with the active pipeline:
-
-- output path: `data/dense/0/fused.ply`
-- matcher: `exhaustive_matcher`
-- max image size: `2000`
-- COLMAP executable: `colmap_bin/COLMAP-3.9.1-windows-cuda/COLMAP.bat`
-
-The code still hardcodes a few runtime values instead of reading every setting from config:
-
-- extraction uses fixed `fps=2`
-- `scripts/run_colmap.py` hardcodes several COLMAP tuning flags listed above
-- `run_pipeline.ps1` adds a machine-specific FFmpeg path when it exists locally
+---
 
 ## Troubleshooting
 
-### FFmpeg not found
-
-Install FFmpeg and make sure `ffmpeg` is available on PATH. `run_pipeline.ps1` also tries to add one local FFmpeg install path, but that path may not match your machine.
-
-### COLMAP executable not found
-
-Verify the executable path in [config.json](C:/dev/3D_Reconstruction/config.json) and confirm the COLMAP files exist under `colmap_bin/`.
-
-### Missing Python modules
-
-Install the required packages with:
-
-```powershell
-.\venv\Scripts\python.exe -m pip install -r .\requirements.txt
-```
-
-### Pipeline fails before the viewer opens
-
-Check [logs/colmap.log](C:/dev/3D_Reconstruction/logs/colmap.log) for the last `[STEP]` and any `[ERROR]` entries.
-
-### No reconstruction found
-
-`view_existing_model.ps1` expects:
-
-```text
-data/dense/0/fused.ply
-```
-
-Run the full pipeline first if that file does not exist.
-
-### Viewer executable not found
-
-`view_existing_model.ps1` also requires:
-
-```text
-viewer/viewer.exe
-```
-
-If that file is missing, rebuild or restore the viewer binary before trying to open the model.
+- **`ffmpeg` not found**: Ensure FFmpeg is installed and added to your System Environment Variables (PATH).
+- **Out of Memory (OOM)**: The pipeline will attempt to downscale. If it still fails, reduce `max_image_size` in `config.json` to 1600.
+- **No Reconstruction**: Ensure the video has significant camera movement (parallax). Static videos will fail at the Sparse stage.
+- **Viewer won't open**: Ensure `viewer/viewer.exe` exists. You may need to compile it from `viewer/main.cpp` using the provided Raylib headers.

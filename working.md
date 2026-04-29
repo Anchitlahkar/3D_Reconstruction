@@ -1,348 +1,106 @@
 # 3D Reconstruction Working Notes
 
-This file is the current reality-check document for the repo. It reflects how the code behaves today.
+This document provides a live technical status of the Frame2Scene project, detailing the implementation specifics, current tuning, and known behaviors.
 
-## What The Project Does
+## Current Technical Status
 
-The project turns a video into a dense 3D point cloud with COLMAP, then opens the result in a custom Raylib viewer.
+### 1. Frame Extraction Logic (`scripts/extract_frames.py`)
+The extraction process is designed to balance reconstruction quality with processing speed.
 
-The main output is:
+**Implementation Details:**
+- **FFmpeg stage**: `fps={fps},scale='min({max_width},iw)':-1`. High quality (`-q:v 2`) is used to minimize compression artifacts.
+- **Sharpness**: Uses `cv2.Laplacian` variance. Frames with low variance (blurred) are discarded.
+- **Redundancy Filter**:
+    - **Farneback Optical Flow**: Measures pixel-wise motion. Frames with mean magnitude below `min_flow_magnitude` are treated as static and rejected.
+    - **Histogram Comparison**: Correlation-based check (`cv2.HISTCMP_CORREL`). Captures lighting/content shifts.
+- **Continuity Guard**: A `max_frame_gap` (default 3) ensures that even if motion is low, we don't lose the "thread" of the sequence, preventing sparse reconstruction failures.
 
+### 2. Reconstruction Pipeline (`scripts/run_colmap.py`)
+The COLMAP wrapper is the core "intelligent" component of the backend.
+
+**COLMAP Stage Parameters:**
+- **Feature Extraction**:
+    - `max_num_features`: 8192
+    - `estimate_affine_shape`: 1 (Improves matching on slanted surfaces)
+    - `domain_size_pooling`: 1 (Better scale invariance)
+- **Mapper**:
+    - `multiple_models`: 1 (Allows COLMAP to create sub-clouds if the whole sequence doesn't link)
+    - `extract_colors`: 1
+- **Dense Stereo (PatchMatch)**:
+    - `geom_consistency`: 1 (Higher quality, checks depth consistency across views)
+    - `num_iterations`: 9 (Configurable in `config.json`)
+    - `filter_min_num_consistent`: 5 (Reduces noise in the point cloud)
+
+**The Fallback System:**
+The pipeline detects failures in the dense stage (usually `std::bad_alloc` or CUDA OOM) and cycles through:
+1. **Best**: 2304px, 9 iterations.
+2. **Standard**: 1920px (1080p target).
+3. **Safe**: 1600px, 7 iterations.
+4. **Emergency**: 1600px + pruning image count to 180 frames.
+
+### 3. Monitoring Engine (`scripts/monitor.py`)
+This is a background thread that samples system state every 1.0s.
+
+**Outputs generated per run:**
+- `metrics.csv`: Full time-series of hardware usage.
+- `events.jsonl`: Log of stage starts, ends, and errors.
+- `stage_summary.json`: Final report including performance scores and insights.
+- `cpu_usage_over_time.csv` & `gpu_usage_over_time.csv`: Data for visualization.
+
+**Performance Score Formula:**
 ```text
-data/dense/0/fused.ply
+Score = (GPU_Util * 0.4) + (Runtime_Efficiency * 0.35) + (Processing_Efficiency * 0.25)
+```
+- **GPU_Util**: Average utilization during the `patch_match_stereo` stage.
+- **Runtime_Efficiency**: Scaled by how close the total time is to an "ideal" 1-hour window.
+- **Processing_Efficiency**: Average time taken per image.
+
+### 4. Custom Viewer (`viewer/`)
+The viewer is optimized for point-cloud visualization rather than triangle meshes.
+
+**Technical Features:**
+- **Sampling**: If a model exceeds 1,000,000 points, it is randomly sampled down to 500,000 for the GPU to maintain 60 FPS.
+- **Robust Normalization**: 
+    - Standard min-max normalization is broken by "stray" points (outliers).
+    - We calculate the 0.5% and 99.5% quantiles for X, Y, and Z.
+    - The model is scaled based on this "robust" extent.
+- **PCA Alignment**:
+    - Centroid Calculation: Translates the model to origin (0,0,0).
+    - Eigen-decomposition: Uses Jacobi iterations to find the 3 principal axes of the point distribution.
+    - Classification: Detects if the cloud is "Linear", "Planar", or "Volumetric".
+    - Rotation: If the cloud is "Linear" or "Planar", it rotates the principal axis to the world Z-axis for a more natural viewing angle.
+
+## Configuration Guide (`config.json`)
+
+```json
+{
+  "fps": 5,
+  "frame_selection": {
+    "min_sharpness": 80.0,      // Increase if you get blurry results
+    "min_flow_magnitude": 1.5,  // Increase for faster movement scans
+    "target_max_frames": 220    // Decrease for faster reconstruction
+  },
+  "colmap": {
+    "matcher": "sequential_matcher", // Use "exhaustive_matcher" for objects
+    "max_image_size": 2304,          // 2304-2800 is sweet spot for 8GB+ VRAM
+    "patch_match_stereo": {
+      "num_iterations": 9           // 5 is fast, 9-12 is high quality
+    }
+  }
+}
 ```
 
-The live COLMAP log is:
-
-```text
-logs/colmap.log
-```
-
-## Current Execution Flow
-
-The active Windows entry point is:
-
-```powershell
-.\run_pipeline.ps1
-```
-
-That script currently:
-
-1. sets up PATH entries for FFmpeg and COLMAP
-2. starts `main.py`
-3. starts `scripts/progress_monitor.py` against the Python process
-4. waits for the pipeline to finish
-
-So the real flow is:
-
-```text
-run_pipeline.ps1
-  -> main.py
-     -> scripts/extract_frames.py
-     -> scripts/run_colmap.py
-```
-
-For checking an already-generated model in the terminal, use:
-
-```powershell
-.\view_existing_model.ps1
-```
-
-## Main Pipeline Behavior
-
-### `main.py`
-
-`main.py` is the orchestration layer.
-
-It:
-
-- loads settings from `config.json`
-- resolves an input video from `--video` or `data/input_video/`
-- copies the input video into `data/input_video/` when needed
-- extracts frames into `data/images/`
-- runs COLMAP against `data/images/`
-
-Useful flags:
-
-```powershell
-.\venv\Scripts\python.exe .\main.py --video path\to\input.mp4
-.\venv\Scripts\python.exe .\main.py --config .\config.json
-```
-
-The direct Python entry point still works, but the recommended user-facing way to run the project is through the `.ps1` scripts.
-
-### `scripts/extract_frames.py`
-
-This script uses `ffmpeg` to extract JPG frames into `data/images/`.
-
-Current behavior:
-
-- always extracts at `fps = 2` (improved parallax)
-- downscales frames to max width `2000`
-- deletes old `.jpg` frames in the target folder before writing new ones
-
-Dependencies used here:
-
-- `ffmpeg` in PATH
-
-### `scripts/run_colmap.py`
-
-This is the reconstruction runner.
-
-It:
-
-- loads COLMAP settings from `config.json`
-- removes old `data/database.db`, `data/sparse/`, and `data/dense/`
-- logs every stage to `logs/colmap.log`
-- runs COLMAP in this order:
-  1. `feature_extractor`
-  2. `exhaustive_matcher`
-  3. `mapper`
-  4. `image_undistorter`
-  5. `patch_match_stereo`
-  6. `stereo_fusion`
-
-It writes the final point cloud to:
-
-```text
-data/dense/0/fused.ply
-```
-
-Important current details:
-
-- matcher is `exhaustive_matcher`
-- `ImageReader.single_camera` is hardcoded to `1`
-- feature extraction: `max_num_features=8192`, `contrast_threshold=0.01`, `edge_threshold=10`
-- undistortion uses `--max_image_size 2000`
-- mapper: `init_min_tri_angle=8.0`, `tri_min_angle=5.0`
-- dense stereo uses `geom_consistency=1`
-- dense stereo uses `num_iterations=5`
-- dense stereo uses `window_radius=5`
-- dense stereo uses `filter_min_num_consistent=5`
-- stereo fusion uses `min_num_pixels=8`
-- stereo fusion uses `max_reproj_error=1.0`
-
-### `scripts/progress_monitor.py`
-
-This script tails `logs/colmap.log` and displays a `tqdm` progress bar.
-
-It tracks:
-
-- current pipeline step
-- processed features
-- matching progress
-- sparse registration progress
-- dense stereo progress
-- fusion progress
-
-It exits when:
-
-- `data/dense/0/fused.ply` appears
-- the monitored PID exits
-- an error is logged
-- you stop it manually
-
-### `view_existing_model.ps1`
-
-This opens the latest saved model without rerunning reconstruction.
-
-It checks for:
-
-```text
-data/dense/0/fused.ply
-```
-
-It also checks for:
-
-```text
-viewer\viewer.exe
-```
-
-and then launches:
-
-```text
-viewer\viewer.exe
-```
-
-This script is now the recommended way to open the viewer. The reconstruction pipeline itself does not launch the viewer automatically.
-
-## Viewer Notes
-
-Viewer source:
-
-```text
-viewer/main.cpp
-```
-
-Viewer binary:
-
-```text
-viewer/viewer.exe
-```
-
-Viewer behavior from `viewer/main.cpp`:
-
-- renders using `GL_POINTS` to eliminate "spiky" artifacts from triangle rendering
-- supports large models with coordinates up to 10,000 units
-- accepts a PLY path as the first CLI argument
-- if no argument is given, searches several default paths and prefers `data/dense/0/fused.ply`
-- supports ASCII and `binary_little_endian` PLY files
-- requires vertex `x`, `y`, and `z` properties
-- uses embedded vertex colors when `red/green/blue` or `r/g/b` are present
-- applies a vertical coordinate correction before normalization
-- normalizes the point cloud to fit the viewer scene
-- shows an on-screen overlay with stats and controls
-
-Manual launch:
-
-```powershell
-.\viewer\viewer.exe .\data\dense\0\fused.ply
-```
-
-You can also run:
-
-```powershell
-.\viewer\viewer.exe
-```
-
-and let the viewer try its built-in default PLY locations.
-
-Current controls from `viewer/main.cpp`:
-
-- right mouse drag: rotate camera
-- mouse wheel: move forward/backward
-- `W`, `A`, `S`, `D`: move
-- `Q`: move up
-- `E`: move down
-- `Shift`: faster movement
-- `F`: flip vertical orientation (fix upside-down models)
-- `G`: toggle grid
-- `V`: toggle density mode (dense vs light)
-- `R`: reset camera
-- `U`: rerun PCA alignment (resets flip)
-
-## Config Reality Check
-
-`config.json` is aligned with the current pipeline:
-
-- `"output_ply": "data/dense/0/fused.ply"`
-- `"matcher": "exhaustive_matcher"`
-- `"max_image_size": 2000`
-
-Still worth noting:
-
-- `scripts/extract_frames.py` reads `fps` and `max_image_size` from `config.json` if provided via `--config`
-- `scripts/run_colmap.py` reads the COLMAP executable and GPU settings from config, but several tuning flags are still hardcoded in code
-- `run_pipeline.ps1` still injects one machine-specific FFmpeg path if it exists
-
-## Dependencies Right Now
-
-`requirements.txt` currently contains:
-
-- `tqdm`
-- `psutil`
-
-That matches the active Python scripts in the current pipeline.
-
-External tools still required:
-
-- `ffmpeg`
-- COLMAP
-
-## Project Layout Right Now
-
-```text
-3D_Reconstruction/
-|-- config.json
-|-- main.py
-|-- README.md
-|-- requirements.txt
-|-- run_pipeline.ps1
-|-- view_existing_model.ps1
-|-- working.md
-|-- scripts/
-|   |-- extract_frames.py
-|   |-- progress_monitor.py
-|   `-- run_colmap.py
-|-- viewer/
-|   `-- main.cpp
-|-- data/
-|   |-- input_video/
-|   |-- images/
-|   |-- sparse/
-|   `-- dense/
-|       `-- 0/
-|           `-- fused.ply
-|-- logs/
-|   `-- colmap.log
-|-- colmap_bin/
-`-- raylib/
-```
-
-## Recommended Ways To Run It
-
-### Full pipeline from video
-
-```powershell
-.\run_pipeline.ps1 --video .\path\to\input.mp4
-```
-
-If `--video` is omitted, `main.py` uses the first supported video found in `data/input_video/`.
-
-### Open an existing reconstruction
-
-```powershell
-.\view_existing_model.ps1
-```
-
-This is the recommended way to check the model from the terminal.
-
-## Troubleshooting
-
-### `ffmpeg was not found`
-
-`scripts/extract_frames.py` needs `ffmpeg` on PATH. `run_pipeline.ps1` tries to add a local FFmpeg install path, but that path is machine-specific.
-
-### `No video provided and no video found`
-
-Pass `--video`, or place a supported video in:
-
-```text
-data/input_video/
-```
-
-### `No input images found`
-
-This means `data/images/` is empty. Check frame extraction first.
-
-### `COLMAP executable not found`
-
-Check:
-
-- `config.json`
-- `colmap_bin/COLMAP-3.9.1-windows-cuda/`
-- the PATH setup in `run_pipeline.ps1`
-
-### `Pipeline ended with an error. Check logs/colmap.log`
-
-Open:
-
-```text
-logs/colmap.log
-```
-
-and inspect the most recent `[STEP]` or `[ERROR]` lines.
-
-### `No reconstruction found`
-
-`view_existing_model.ps1` could not find:
-
-```text
-data/dense/0/fused.ply
-```
-
-Run the reconstruction first.
-
-### `viewer\viewer.exe was not found`
-
-`view_existing_model.ps1` found the model but could not find the viewer binary. Restore or rebuild `viewer/viewer.exe` before trying again.
+## Known Behaviors & Limitations
+
+1. **Windows Dependency**: The resource monitor uses `GlobalMemoryStatusEx` (Windows-only) and the `run_pipeline.ps1` script is PowerShell-based.
+2. **GPU Prerequisite**: COLMAP's dense reconstruction requires a CUDA-capable GPU. The pipeline will fail at the `patch_match_stereo` stage on AMD or Intel GPUs.
+3. **Outliers**: Sparse reconstruction occasionally creates "stray" points floating far from the scene. The viewer's Robust Normalization and Grid toggle help mitigate the visual impact of these.
+4. **Orientation**: Photogrammetry has no absolute "up". Use the `F` key in the viewer to flip the model if it appears upside-down.
+
+## Recent Changes
+
+- **Added Resource Guard**: Prevents pipeline crashes by checking RAM/VRAM before heavy stages.
+- **Multi-Level Fallback**: Implemented automatic resolution scaling for dense reconstruction.
+- **Enhanced Monitoring**: Added performance scoring and run comparisons.
+- **PCA Alignment**: Improved viewer initial orientation and centering.
+- **Adaptive Frame Selection**: Replaced fixed FPS extraction with content-aware selection.

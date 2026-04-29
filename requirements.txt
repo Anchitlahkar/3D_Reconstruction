@@ -1,2 +1,6 @@
+nvidia-ml-py>=12.560
+numpy>=1.26
+opencv-python-headless>=4.10
 psutil>=5.9
+rich>=13.9
 tqdm>=4.66

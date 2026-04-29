@@ -1,5 +1,16 @@
 {
-  "fps": 2,
+  "fps": 5,
+  "frame_selection": {
+    "enabled": true,
+    "analysis_width": 640,
+    "min_sharpness": 80.0,
+    "min_histogram_diff": 0.12,
+    "min_flow_magnitude": 1.5,
+    "min_feature_change_ratio": 0.08,
+    "max_frame_gap": 3,
+    "target_min_frames": 150,
+    "target_max_frames": 220
+  },
   "paths": {
     "input_video_dir": "data/input_video",
     "image_dir": "data/images",
@@ -11,9 +22,22 @@
   "colmap": {
     "executable": "colmap_bin/COLMAP-3.9.1-windows-cuda/COLMAP.bat",
     "use_gpu": true,
+    "gpu_index": 0,
+    "num_threads": 10,
     "camera_model": "SIMPLE_RADIAL",
     "single_camera": true,
-    "matcher": "exhaustive_matcher",
-    "max_image_size": 2000
+    "matcher": "sequential_matcher",
+    "max_image_size": 2304,
+    "sequential_matcher": {
+      "overlap": 10,
+      "quadratic_overlap": false,
+      "loop_detection": false
+    },
+    "patch_match_stereo": {
+      "geom_consistency": true,
+      "num_iterations": 9,
+      "window_radius": 7,
+      "filter_min_num_consistent": 5
+    }
   }
 }
